@@ -66,10 +66,12 @@ export function evaluatePolicy(
   };
 }
 
-function matchPattern(value: string, pattern: string): boolean {
+export function matchPattern(value: string, pattern: string): boolean {
   if (pattern === '*') return true;
   if (pattern.includes('*')) {
-    const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+    // Escape regex metacharacters except *, then replace * with .*
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+    const regex = new RegExp('^' + escaped + '$');
     return regex.test(value);
   }
   return value === pattern;

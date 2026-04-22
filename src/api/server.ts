@@ -6,6 +6,7 @@ import swaggerUi from '@fastify/swagger-ui';
 import { z } from 'zod';
 import pg from 'pg';
 import { mapEventToCompliance } from '../compliance/mapper.js';
+import { matchPattern } from '../policy/engine.js';
 
 const { Pool } = pg;
 
@@ -48,7 +49,7 @@ const EvaluatePolicySchema = z.object({
 });
 
 const LogEventSchema = z.object({
-  agent_id: z.string().uuid(),
+  agent_id: z.string().min(1),
   event_type: z.string().min(1),
   action: z.string().optional(),
   resource: z.string().optional(),
@@ -357,14 +358,7 @@ export async function buildServer() {
     };
   });
 
-  function matchPattern(value: string, pattern: string): boolean {
-    if (pattern === '*') return true;
-    if (pattern.includes('*')) {
-      const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
-      return regex.test(value);
-    }
-    return value === pattern;
-  }
+  
 
   fastify.get('/compliance/:agent_id/:regulation', async (request) => {
     const { agent_id, regulation } = request.params as { agent_id: string; regulation: string };

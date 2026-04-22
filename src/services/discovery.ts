@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { EventEmitter } from 'events';
+import { createHash } from 'crypto';
 
 const { Pool } = pg;
 
@@ -148,7 +149,6 @@ export class AgentDiscoveryService extends EventEmitter {
   }
 
   private hashApiKey(apiKey: string): string {
-    const { createHash } = require('crypto');
     return createHash('sha256').update(apiKey).digest('hex');
   }
 
