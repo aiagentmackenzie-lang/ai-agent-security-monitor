@@ -12,6 +12,8 @@ export interface Policy {
   rules: PolicyRule[];
   agent_ids: string[];
   active: boolean;
+  /** When 'deny', unmatched actions are blocked (allowlist mode). When 'permit' or unset, unmatched actions are allowed (denylist mode — current default). */
+  default_effect?: 'permit' | 'deny';
 }
 
 export interface PolicyEvaluationRequest {
@@ -42,6 +44,9 @@ export function evaluatePolicy(
     p => p.active && (p.agent_ids.includes('*') || p.agent_ids.includes(request.agent_id))
   );
 
+  // Track which allowlist policies evaluated (for default_effect logic)
+  let allowlistPolicy: Policy | undefined;
+
   for (const policy of applicable) {
     for (const rule of policy.rules) {
       const actionMatch = matchPattern(request.action, rule.action);
@@ -57,6 +62,23 @@ export function evaluatePolicy(
         };
       }
     }
+
+    // Track the first allowlist policy we encounter
+    if (policy.default_effect === 'deny' && !allowlistPolicy) {
+      allowlistPolicy = policy;
+    }
+  }
+
+  // If any applicable policy uses allowlist mode (default_effect='deny'),
+  // unmatched actions are denied by that policy
+  if (allowlistPolicy) {
+    return {
+      allowed: false,
+      reason: `Denied by default — allowlist policy '${allowlistPolicy.name}' has no matching permit rule`,
+      policy_id: allowlistPolicy.id,
+      certificate_id: `cert_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      evaluated_at: new Date().toISOString(),
+    };
   }
 
   return {

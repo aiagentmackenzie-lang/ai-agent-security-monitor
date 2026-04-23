@@ -37,6 +37,7 @@ export async function initDb(connectionString: string) {
       rules JSONB NOT NULL DEFAULT '[]',
       agent_ids TEXT[] DEFAULT ARRAY['*'],
       active BOOLEAN DEFAULT true,
+      default_effect VARCHAR(10), -- 'permit' or 'deny' — when 'deny', unmatched actions are blocked (allowlist mode)
       priority INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()

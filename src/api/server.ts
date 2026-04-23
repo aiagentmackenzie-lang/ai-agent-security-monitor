@@ -35,6 +35,7 @@ const CreatePolicySchema = z.object({
   rules: z.array(PolicyRuleSchema).min(1),
   agent_ids: z.array(z.string()).default(['*']),
   active: z.boolean().default(true),
+  default_effect: z.enum(['permit', 'deny']).optional(),
 });
 
 const EvaluatePolicySchema = z.object({
@@ -280,10 +281,10 @@ export async function buildServer() {
   fastify.post('/policies', async (request) => {
     const data = CreatePolicySchema.parse(request.body);
     const result = await pool.query(
-      `INSERT INTO policies (name, description, rules, agent_ids, active)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO policies (name, description, rules, agent_ids, active, default_effect)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [data.name, data.description, JSON.stringify(data.rules), data.agent_ids, data.active]
+      [data.name, data.description, JSON.stringify(data.rules), data.agent_ids, data.active, data.default_effect || null]
     );
     return { policy: result.rows[0] };
   });
@@ -309,6 +310,7 @@ export async function buildServer() {
     if (data.rules !== undefined) { updates.push(`rules = $${idx++}`); values.push(JSON.stringify(data.rules)); }
     if (data.agent_ids !== undefined) { updates.push(`agent_ids = $${idx++}`); values.push(data.agent_ids); }
     if (data.active !== undefined) { updates.push(`active = $${idx++}`); values.push(data.active); }
+    if (data.default_effect !== undefined) { updates.push(`default_effect = $${idx++}`); values.push(data.default_effect); }
     updates.push(`updated_at = NOW()`);
     values.push(id);
 
@@ -354,6 +356,8 @@ export async function buildServer() {
     let reason = 'Default allow - no matching policy found';
     let policy_id: string | undefined;
 
+    let allowlistPolicy: { id: string; name: string } | undefined;
+
     for (const policy of policies) {
       const rules = policy.rules as z.infer<typeof PolicyRuleSchema>[];
       const match = rules.find(r => {
@@ -369,6 +373,18 @@ export async function buildServer() {
         policy_id = policy.id;
         break;
       }
+
+      // Track allowlist-mode policies for default-effect logic
+      if (policy.default_effect === 'deny' && !allowlistPolicy) {
+        allowlistPolicy = { id: policy.id, name: policy.name };
+      }
+    }
+
+    // If no rule matched and an allowlist-mode policy applies, deny by default
+    if (!policy_id && allowlistPolicy) {
+      allowed = false;
+      reason = `Denied by default \u2014 allowlist policy '${allowlistPolicy.name}' has no matching permit rule`;
+      policy_id = allowlistPolicy.id;
     }
 
     const certificate_id = `cert_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;

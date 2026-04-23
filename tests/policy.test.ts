@@ -158,6 +158,129 @@ describe('Compliance Mapper', () => {
   });
 });
 
+describe('Policy Engine - Allowlist Mode', () => {
+  it('should deny unmatched actions when default_effect is deny', () => {
+    const result = evaluatePolicy(
+      { agent_id: 'agt_123', action: 'data:read:products', resource: '/api/products' },
+      [
+        {
+          id: 'pol_allow',
+          name: 'Allowlist Policy',
+          rules: [
+            { action: 'data:read:users', resource: '/api/users', effect: 'permit' as const },
+          ],
+          agent_ids: ['*'],
+          active: true,
+          default_effect: 'deny',
+        },
+      ]
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain('allowlist policy');
+    expect(result.reason).toContain('Allowlist Policy');
+    expect(result.policy_id).toBe('pol_allow');
+  });
+
+  it('should permit matched actions in allowlist mode', () => {
+    const result = evaluatePolicy(
+      { agent_id: 'agt_123', action: 'data:read:users', resource: '/api/users' },
+      [
+        {
+          id: 'pol_allow',
+          name: 'Allowlist Policy',
+          rules: [
+            { action: 'data:read:users', resource: '/api/users', effect: 'permit' as const },
+          ],
+          agent_ids: ['*'],
+          active: true,
+          default_effect: 'deny',
+        },
+      ]
+    );
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toContain('Permitted by policy');
+  });
+
+  it('should still allow by default when no default_effect is set', () => {
+    const result = evaluatePolicy(
+      { agent_id: 'agt_123', action: 'data:read:products', resource: '/api/products' },
+      [
+        {
+          id: 'pol_deny',
+          name: 'Deny Policy',
+          rules: [
+            { action: 'data:delete:*', resource: '*', effect: 'deny' as const },
+          ],
+          agent_ids: ['*'],
+          active: true,
+        },
+      ]
+    );
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toContain('Default allow');
+  });
+
+  it('should combine allowlist mode with explicit deny rules', () => {
+    const result = evaluatePolicy(
+      { agent_id: 'agt_123', action: 'data:delete:users', resource: '/db/users' },
+      [
+        {
+          id: 'pol_combined',
+          name: 'Combined Policy',
+          rules: [
+            { action: 'data:read:*', resource: '*', effect: 'permit' as const },
+            { action: 'data:delete:*', resource: '*', effect: 'deny' as const },
+          ],
+          agent_ids: ['*'],
+          active: true,
+          default_effect: 'deny',
+        },
+      ]
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain('Denied by policy');
+  });
+
+  it('should handle wildcard permits in allowlist mode', () => {
+    const result = evaluatePolicy(
+      { agent_id: 'agt_123', action: 'data:read:orders', resource: '/api/orders' },
+      [
+        {
+          id: 'pol_wild',
+          name: 'Wildcard Allow',
+          rules: [
+            { action: 'data:read:*', resource: '*', effect: 'permit' as const },
+          ],
+          agent_ids: ['*'],
+          active: true,
+          default_effect: 'deny',
+        },
+      ]
+    );
+    expect(result.allowed).toBe(true);
+  });
+
+  it('should generate certificate for allowlist-mode denials', () => {
+    const result = evaluatePolicy(
+      { agent_id: 'agt_123', action: 'admin:write', resource: '/admin/settings' },
+      [
+        {
+          id: 'pol_strict',
+          name: 'Strict Allowlist',
+          rules: [
+            { action: 'data:read:*', resource: '*', effect: 'permit' as const },
+          ],
+          agent_ids: ['*'],
+          active: true,
+          default_effect: 'deny',
+        },
+      ]
+    );
+    expect(result.certificate_id).toBeDefined();
+    expect(result.policy_id).toBe('pol_strict');
+  });
+});
+
 describe('Type exports', () => {
   it('should export valid AgentTypes including openclaw', async () => {
     const { createAgent } = await import('../src/agents/registry.js');
