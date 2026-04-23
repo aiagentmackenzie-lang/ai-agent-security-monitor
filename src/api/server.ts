@@ -7,6 +7,7 @@ import { z } from 'zod';
 import pg from 'pg';
 import { mapEventToCompliance } from '../compliance/mapper.js';
 import { matchPattern } from '../policy/engine.js';
+import { redactEvent } from '../security/redaction.js';
 
 const { Pool } = pg;
 
@@ -219,19 +220,45 @@ export async function buildServer() {
     const eventData = `${data.agent_id}-${data.event_type}-${data.action || ''}-${Date.now()}`;
     const eventHash = createHashFn('sha256').update(previousHash ? `${previousHash}-${eventData}` : eventData).digest('hex');
 
+    // Redact sensitive data before persistence
+    const redacted = redactEvent({
+      event_type: data.event_type,
+      action: data.action,
+      resource: data.resource,
+      result: data.result,
+      details: data.details || {},
+    });
+
     const result = await pool.query(
       `INSERT INTO agent_events (agent_id, event_type, action, resource, result, details, previous_hash, hash)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [data.agent_id, data.event_type, data.action, data.resource, data.result, JSON.stringify(data.details || {}), previousHash, eventHash]
+      [data.agent_id, data.event_type, redacted.action, redacted.resource, data.result, JSON.stringify(redacted.details), previousHash, eventHash]
     );
+
+    // Create alerts for any redacted secrets
+    if (redacted.flags.length > 0) {
+      const criticalFlags = redacted.flags.filter(f => f.severity === 'critical' || f.severity === 'high');
+      if (criticalFlags.length > 0) {
+        await pool.query(
+          `INSERT INTO alerts (agent_id, type, severity, message, metadata)
+           VALUES ($1, 'sensitive_data_detected', $2, $3, $4)`,
+          [
+            data.agent_id,
+            criticalFlags.some(f => f.severity === 'critical') ? 'critical' : 'high',
+            `Sensitive data detected in event: ${criticalFlags.map(f => f.pattern).join(', ')}`,
+            JSON.stringify({ flags: redacted.flags, event_type: data.event_type }),
+          ]
+        );
+      }
+    }
 
     const complianceRecords = mapEventToCompliance(
       data.agent_id,
       data.event_type,
-      data.action,
-      data.resource,
-      data.details || {}
+      redacted.action,
+      redacted.resource,
+      redacted.details
     );
 
     for (const record of complianceRecords) {
