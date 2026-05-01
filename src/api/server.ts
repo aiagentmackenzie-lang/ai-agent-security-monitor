@@ -553,7 +553,7 @@ export async function buildServer() {
     const agentStats = await pool.query(`
       SELECT
         COUNT(*) as total_agents,
-        COUNT(*) FILTER (WHERE active = true) as active_agents,
+        COUNT(*) FILTER (WHERE active = true AND quarantined = false) as active_agents,
         COUNT(*) FILTER (WHERE quarantined = true) as quarantined_agents,
         COUNT(*) FILTER (WHERE active = false) as inactive_agents
       FROM agents
