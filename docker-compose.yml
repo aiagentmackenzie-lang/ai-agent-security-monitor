@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: ai_agent_security
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -27,23 +27,7 @@ services:
       timeout: 5s
       retries: 5
 
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ai_agent_security
-      REDIS_URL: redis://redis:6379
-      PORT: 8000
-      LOG_LEVEL: info
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./src:/app/src
-    command: npm run dev
+# api service runs locally via npm run dev
 
 volumes:
   postgres_data:
