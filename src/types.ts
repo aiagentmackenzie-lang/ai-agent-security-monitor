@@ -1,3 +1,8 @@
+/**
+ * Canonical type definitions for AI Agent Security Monitor.
+ * All other modules must import from this file — no duplicate definitions.
+ */
+
 export type AgentType = 'langchain' | 'crewai' | 'claude_code' | 'openclaw' | 'openai_agents' | 'custom';
 
 export type EventResult = 'success' | 'denied' | 'error';
@@ -12,7 +17,7 @@ export interface Agent {
   owner?: string;
   metadata: Record<string, unknown>;
   active: boolean;
-  quarantined?: boolean;
+  quarantined: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -25,6 +30,8 @@ export interface AgentEvent {
   resource?: string;
   result: EventResult;
   details: Record<string, unknown>;
+  previous_hash?: string | null;
+  hash: string;
   created_at: Date;
 }
 
@@ -42,6 +49,9 @@ export interface Policy {
   rules: PolicyRule[];
   agent_ids: string[];
   active: boolean;
+  /** When 'deny', unmatched actions are blocked (allowlist mode). When absent, unmatched actions are allowed (denylist mode). */
+  default_effect?: 'deny';
+  priority: number;
   created_at: Date;
   updated_at: Date;
 }
@@ -80,4 +90,17 @@ export interface ComplianceStatus {
   compliant: boolean;
   controls_satisfied: string[];
   gaps: string[];
+}
+
+export interface Alert {
+  id: string;
+  agent_id: string;
+  type: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  message: string;
+  acknowledged: boolean;
+  acknowledged_by?: string;
+  acknowledged_at?: Date;
+  metadata: Record<string, unknown>;
+  created_at: Date;
 }

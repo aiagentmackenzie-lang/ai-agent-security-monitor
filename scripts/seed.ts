@@ -89,8 +89,8 @@ async function seed() {
     { agent_idx: 0, event_type: 'tool_call', action: 'data:read:users', resource: '/api/users', result: 'success', details: { tool: 'user_lookup', response_time_ms: 120 } },
     { agent_idx: 0, event_type: 'api_call', action: 'data:read:products', resource: '/api/products', result: 'success', details: { endpoint: 'https://api.internal/products', response_time_ms: 85 } },
     { agent_idx: 1, event_type: 'tool_call', action: 'code:review', resource: '/repo/frontend/src/auth.ts', result: 'success', details: { language: 'typescript', issues_found: 2 } },
-    { agent_idx: 2, event_type: 'data_access', action: 'data:read:transactions', resource: '/api/finance/transactions', result: 'success', details: { records_accessed: 150, data_classification: 'financial_data' } },
-    { agent_idx: 3, event_type: 'data_access', action: 'data:read:pii', resource: '/api/hr/employees', result: 'success', details: { records_accessed: 5, data_classification: 'pii' } },
+    { agent_idx: 2, event_type: 'data_access', action: 'data:read:transactions', resource: '/api/finance/transactions', result: 'success', details: { records_accessed: 150, data_type: 'financial_data' } },
+    { agent_idx: 3, event_type: 'data_access', action: 'data:read:pii', resource: '/api/hr/employees', result: 'success', details: { records_accessed: 5, data_type: 'pii' } },
     { agent_idx: 4, event_type: 'security_scan', action: 'vuln:scan', resource: '/infrastructure/web-server', result: 'success', details: { vulnerabilities_found: 0, scan_duration_ms: 45000 } },
     { agent_idx: 0, event_type: 'tool_call', action: 'data:read:users', resource: '/api/users/123', result: 'denied', details: { reason: 'rate_limit_exceeded', attempts: 15 } },
   ];
@@ -110,12 +110,12 @@ async function seed() {
     );
     previousHash = hash;
 
-    // Map compliance
+    // Map compliance (using data_type for mapper compatibility)
     const regulations: Array<{ regulation: string; control_id: string }> = [];
-    if (event.details.data_classification === 'financial_data') {
+    if (event.details.data_type === 'financial_data') {
       regulations.push({ regulation: 'finra', control_id: 'FINRA-4511' });
     }
-    if (event.details.data_classification === 'pii') {
+    if (event.details.data_type === 'pii') {
       regulations.push({ regulation: 'gdpr', control_id: 'ART-22' });
     }
     if (event.event_type === 'tool_call' || event.event_type === 'api_call') {
@@ -126,7 +126,7 @@ async function seed() {
       await pool.query(
         `INSERT INTO compliance_records (agent_id, regulation, control_id, evidence, status)
          VALUES ($1, $2, $3, $4, $5)`,
-        [agentId, reg.regulation, reg.control_id, JSON.stringify({ event_type: event.event_type, action: event.action, resource: event.resource, mapped_at: new Date().toISOString() }), 'compliant']
+        [agentId, reg.regulation, reg.control_id, JSON.stringify({ event_type: event.event_type, action: event.action, resource: event.resource, mapped_at: new Date().toISOString() }), 'pending']
       );
     }
     console.log(`✓ Event: ${event.event_type} → ${event.action} on ${event.resource} (${event.result})`);

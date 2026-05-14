@@ -8,13 +8,14 @@ import {
 } from '../src/services/baseline.js';
 
 describe('Baseline - Default Baselines', () => {
-  it('should have baselines for all supported agent types', () => {
+  it('should have baselines for all supported agent types including openai_agents', () => {
     const types = DEFAULT_BASELINES.map(b => b.agent_type);
     expect(types).toContain('langchain');
     expect(types).toContain('crewai');
     expect(types).toContain('claude_code');
     expect(types).toContain('openclaw');
-    expect(types.length).toBe(4);
+    expect(types).toContain('openai_agents');
+    expect(types.length).toBe(5);
   });
 
   it('should have action patterns for each baseline', () => {
@@ -49,23 +50,25 @@ describe('Baseline - Frequency Anomaly Detection', () => {
   };
 
   it('should detect frequency spikes', () => {
-    // All events within business hours (9-17) — 5000 events in a 1-hour window
+    // All events within business hours (9-17)
     const noon = new Date();
     noon.setHours(12, 0, 0, 0);
     const events = Array.from({ length: 5000 }, (_, i) => ({
       action: 'data:read',
-      created_at: new Date(noon.getTime() - i * 60000), // 1 min apart
+      created_at: new Date(noon.getTime() - i * 3600000),
       resource: '/api/data',
     }));
 
     // With freq_threshold_stddev=2 and baseline frequency=100,
     // expected rate = 100/24 ≈ 4.17/hr, threshold = 4.17 * 3 ≈ 12.5/hr
-    // 5000 events over ~83 hrs but only ~32hrs in 9-17 range
-    // avgEventsPerHour = 32/24 ≈ 208/hr — far exceeds 12.5
+    // 5000 events over 5000 hours of business time
+    // avgEventsPerHour = 5000/9 = 555.5/hr — far exceeds 12.5
     const anomalies = detectAnomalies('agt_test', 'test', events, [baseline]);
     const freqAnomaly = anomalies.find(a => a.anomaly_type === 'frequency_spike');
     expect(freqAnomaly).toBeDefined();
     expect(freqAnomaly!.severity).toBe('high');
+    // FIX M-10: verify agent_id is populated
+    expect(freqAnomaly!.agent_id).toBe('agt_test');
   });
 
   it('should not flag normal frequency', () => {
@@ -104,6 +107,7 @@ describe('Baseline - Unusual Action Detection', () => {
     const actionAnomaly = anomalies.find(a => a.anomaly_type === 'unusual_action');
     expect(actionAnomaly).toBeDefined();
     expect(actionAnomaly!.severity).toBe('medium');
+    expect(actionAnomaly!.agent_id).toBe('agt_test');
   });
 
   it('should not flag normal actions', () => {
@@ -149,6 +153,7 @@ describe('Baseline - Off-Hours Activity', () => {
     const offHours = anomalies.find(a => a.anomaly_type === 'off_hours_activity');
     expect(offHours).toBeDefined();
     expect(offHours!.severity).toBe('low');
+    expect(offHours!.agent_id).toBe('agt_test');
   });
 });
 
@@ -173,6 +178,7 @@ describe('Baseline - New Resource Access', () => {
     const anomalies = detectAnomalies('agt_test', 'langchain', events, [baseline]);
     const resourceAnomaly = anomalies.find(a => a.anomaly_type === 'new_resource_access');
     expect(resourceAnomaly).toBeDefined();
+    expect(resourceAnomaly!.agent_id).toBe('agt_test');
   });
 
   it('should not flag baseline resource access', () => {
@@ -200,5 +206,19 @@ describe('Baseline - Unknown Agent Type', () => {
 
     const anomalies = detectAnomalies('agt_test', 'unknown_type', events);
     expect(anomalies).toEqual([]);
+  });
+
+  it('should return no anomalies for openai_agents type (now has a baseline)', () => {
+    const now = new Date();
+    const events = Array.from({ length: 5 }, (_, i) => ({
+      action: 'tool_call',
+      created_at: new Date(now.getTime() - i * 3600000),
+      resource: '/api/data',
+    }));
+
+    // openai_agents now has a baseline, so it should not return empty anomalies
+    const result = getBaselineForType('openai_agents');
+    expect(result).toBeDefined();
+    expect(result!.action_patterns).toContain('tool_call');
   });
 });

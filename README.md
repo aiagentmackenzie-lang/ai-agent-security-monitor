@@ -3,7 +3,7 @@
 [![Node.js](https://img.shields.io/badge/node-20%2B-green?logo=node.js)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Fastify](https://img.shields.io/badge/framework-Fastify-009688?logo=fastapi)](https://fastify.dev/)
-[![Tests](https://img.shields.io/badge/tests-80%20passing-brightgreen)](./tests)
+[![Tests](https://img.shields.io/badge/tests-86%20passing-brightgreen)](./tests)
 [![OWASP Agentic](https://img.shields.io/badge/OWASP-Agentic%20Top%2010%202026-purple)](https://genai.owasp.org/)
 [![License](https://img.shields.io/badge/license-ISC-green)](./LICENSE)
 
@@ -17,24 +17,26 @@ Every company now has AI agents operating against their data. OpenClaw agents on
 
 This platform solves that at three layers:
 
-1. **Discovery** — Find every AI agent with access to your systems
-2. **Observability** — Track what every agent does in real-time
-3. **Control** — Enforce policy and generate compliance evidence
+1. **Observability** — Track what every agent does in real-time with tamper-evident audit logs
+2. **Control** — Enforce policy (deny-by-default and allowlist modes) with signed certificates
+3. **Compliance** — Auto-map agent actions to GDPR, AI Act, CCPA, HIPAA, FINRA controls
+
+> **Note:** Agent Discovery (shadow AI detection) is architecturally present but core detection methods are stubs awaiting integration with your API gateway or access logs. See `src/services/discovery.ts`.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| 🔍 Agent Discovery | Detect shadow AI agents via API key scanning and behavior signatures |
-| 📊 Policy Engine | Deny-by-default and allowlist modes with wildcard pattern matching |
-| 🔒 Sensitive Data Redaction | Auto-redact 18+ secret types (API keys, tokens, PII) before persistence |
-| ⛓️ Hash-Chained Audit Trail | Tamper-evident event log with SHA-256 chain verification |
-| 🏥 Agent Quarantine | Instantly isolate rogue agents with one API call |
-| 📋 Compliance Mapping | Auto-map agent actions to GDPR, AI Act, CCPA, HIPAA, FINRA |
+| 🔒 Policy Engine | Deny-by-default and allowlist modes with wildcard pattern matching and conditions |
+| 🔐 Sensitive Data Redaction | Auto-redact 17 secret types (API keys, tokens, PII) before persistence |
+| ⛓️ Hash-Chained Audit Trail | SHA-256 chained event log with field-level integrity and tamper verification |
+| 🏥 Agent Quarantine & Revocation | Instantly isolate or revoke rogue agents with one API call |
+| 📋 Compliance Mapping | Auto-map agent actions to GDPR, AI Act, CCPA, HIPAA, FINRA (status: pending until verified) |
 | 🚨 Alert System | Severity-graded alerts for policy violations and sensitive data detection |
 | 📡 Behavior Baselines | Anomaly detection for frequency spikes, off-hours activity, unusual actions |
 | 📄 Compliance Export | Generate paginated evidence with hash chain verification for auditors |
-| 🤖 MCP Integration | Act as a non-bypassable proxy gate for OpenClaw / Claude Code agents |
+| 🤖 MCP Integration | Act as a policy gate for OpenClaw / Claude Code agents via MCP |
+| 🔑 API Key Authentication | Optional `X-API-Key` header authentication for all endpoints (production recommended) |
 
 ## Quick Start
 
@@ -69,11 +71,22 @@ npm run dev
 
 Server runs on `http://localhost:8000`. Swagger UI at `/documentation`.
 
+### Authentication
+
+Set the `API_KEY` environment variable to enable authentication on all endpoints:
+
+```bash
+# In .env or environment
+API_KEY=your-secure-api-key-here
+```
+
+When `API_KEY` is set, all requests must include the `X-API-Key` header. Without it, all endpoints are open (suitable for local development only).
+
 ### Development
 
 ```bash
 npm run dev          # Start with hot reload
-npm test             # Run 80 tests
+npm test             # Run 86 tests
 npm run test:coverage # Coverage report
 npm run typecheck    # TypeScript check
 npm run lint         # ESLint
@@ -85,29 +98,32 @@ npm run lint         # ESLint
 ┌─────────────────────────────────────────────────────────────┐
 │                  AI Agent Security Monitor                   │
 ├─────────────────────────────────────────────────────────────┤
-│  MCP Security Server (Proxy/Gate)                           │
-│  └── gate_action, register_agent, log_event, query_compliance │
+│  API (Fastify) ─────── Swagger UI / JSON ──────────────── │
+│  └── Auth middleware (X-API-Key when configured)            │
 │                           │                                  │
-│  Policy Engine ────────────┼────────────────────────────────│
-│  └── Deny-by-exception     │                                 │
-│  └── Allowlist mode        │                                 │
-│  └── Wildcard patterns     │                                 │
+│  MCP Security Server ────┤                                  │
+│  └── gate_action          │                                  │
+│  └── evaluate_tool_call   │  (policy evaluation only,       │
+│  └── register_agent       │   does NOT proxy/execute tools)│
+│  └── log_event            │                                  │
+│  └── query_compliance     │                                  │
 │                           ▼                                  │
-│  Agent Registry ───────────┼────────────────────────────────│
-│  └── Identity mapping      │                                 │
-│  └── API key hashing       │                                 │
-│  └── Quarantine / Revoke   │                                 │
+│  Policy Engine ───────────┼────────────────────────────────│
+│  └── Deny-by-exception   │                                  │
+│  └── Allowlist mode       │                                  │
+│  └── Wildcard patterns    │                                  │
+│  └── Condition evaluation │                                  │
 │                           ▼                                  │
-│  Sensitive Data Redaction  │                                 │
-│  └── 18+ secret patterns   │                                 │
-│  └── Severity flagging     │                                 │
+│  Sensitive Data Redaction │                                  │
+│  └── 17 secret patterns   │                                  │
+│  └── Severity flagging     │                                  │
 │                           ▼                                  │
-│  Audit Trail (Hash-Chained) │                                │
-│  └── SHA-256 chain         │                                 │
-│  └── Tamper evidence       │                                 │
+│  Audit Trail (Hash-Chained)│                                │
+│  └── SHA-256 chain (all fields)                             │
+│  └── Tamper evidence       │                                │
 │                           ▼                                  │
 │  Compliance Evidence Collector │                              │
-│  └── GDPR, AI Act, CCPA, HIPAA, FINRA                       │
+│  └── GDPR, AI Act, CCPA, HIPAA, FINRA (pending status)     │
 │                           ▼                                  │
 │  Behavior Baselines        │                                 │
 │  └── Frequency anomaly     │                                 │
@@ -125,34 +141,39 @@ npm run lint         # ESLint
 | `POST` | `/agents` | Register a new agent |
 | `GET` | `/agents/:id` | Get agent details |
 | `PATCH` | `/agents/:id` | Update agent |
-| `DELETE` | `/agents/:id` | Soft-delete agent |
+| `DELETE` | `/agents/:id` | Soft-delete agent (returns 404 if not found) |
 | `POST` | `/agents/:id/quarantine` | Quarantine an agent |
 | `POST` | `/agents/:id/unquarantine` | Release from quarantine |
-| `POST` | `/agents/:id/revoke` | Revoke all agent access |
+| `POST` | `/agents/:id/revoke` | Revoke all agent access (transactional) |
 | `GET` | `/agents/:id/events` | Get agent event history |
-| `POST` | `/agents/:id/events` | Log an agent event (with redaction + compliance) |
+| `POST` | `/agents/:id/events` | Log an agent event (uses URL `:id`, with redaction + compliance) |
 
 ### Policies
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/policies` | List all policies |
-| `POST` | `/policies` | Create a policy |
+| `GET` | `/policies` | List all policies (ordered by priority) |
+| `POST` | `/policies` | Create a policy (supports `priority` and `default_effect`) |
 | `GET` | `/policies/:id` | Get policy details |
 | `PATCH` | `/policies/:id` | Update policy |
-| `DELETE` | `/policies/:id` | Delete a policy |
-| `POST` | `/policy/evaluate` | Evaluate action against all active policies |
+| `DELETE` | `/policies/:id` | Soft-delete policy (sets `active = false`) |
+
+### Policy Evaluation
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/policy/evaluate` | Evaluate action against all active policies (supports conditions) |
 
 ### Compliance
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/compliance/:agent_id/:regulation` | Check agent compliance status |
-| `GET` | `/compliance/export/:agent_id` | Export paginated compliance evidence with hash chain |
+| `GET` | `/compliance/reports/:agent_id` | Generate full compliance report |
+| `GET` | `/compliance/export/:agent_id` | Export paginated evidence with hash chain verification |
 
 ### Dashboard
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/dashboard/summary` | Agent, event, alert, and compliance stats |
-| `GET` | `/dashboard/events/timeline` | Event timeline (filterable by agent, hours) |
+| `GET` | `/dashboard/events/timeline` | Event timeline (parameterized query, validated input) |
 | `GET` | `/dashboard/compliance/summary` | Compliance breakdown by regulation |
 
 ### Alerts
@@ -163,11 +184,12 @@ npm run lint         # ESLint
 
 ## Sensitive Data Redaction
 
-Automatically detects and redacts **18+ secret patterns** before persistence:
+Automatically detects and redacts **17 secret patterns** before persistence:
 
 | Pattern | Severity | Example |
 |---------|----------|---------|
 | AWS Access Key | Critical | `AKIA...` → `[AWS_ACCESS_KEY]` |
+| AWS Secret Key (context-aware) | Critical | Only flagged near AWS context |
 | OpenAI API Key | Critical | `sk-abc...` → `[OPENAI_API_KEY]` |
 | Anthropic API Key | Critical | `sk-ant-...` → `[ANTHROPIC_API_KEY]` |
 | GitHub Token | Critical | `ghp_...` → `[GITHUB_TOKEN]` |
@@ -176,16 +198,22 @@ Automatically detects and redacts **18+ secret patterns** before persistence:
 | Private Key | Critical | `-----BEGIN RSA PRIVATE KEY-----` → `[PRIVATE_KEY_REDACTED]` |
 | JWT Token | High | `eyJhbG...` → `[JWT_TOKEN]` |
 | Slack Token | High | `xoxb-...` → `[SLACK_TOKEN]` |
+| Discord Token | High | `MN...27` → `[DISCORD_TOKEN]` |
+| GCP Service Account | High | `...@...iam.gserviceaccount.com` → `[GCP_SERVICE_ACCOUNT]` |
+| GCP API Key | High | `AIza...` → `[GCP_API_KEY]` |
+| Gemini API Key | High | `AIzaSy...` → `[GEMINI_API_KEY]` |
 | Stripe Key | Critical | `sk_live_...` → `[STRIPE_KEY]` |
 | Email Address | Medium | `user@company.com` → `[EMAIL_REDACTED]` |
 | Credit Card | Critical | `4111-1111-...` → `[CC_REDACTED]` |
 | Private IP | Low | `192.168.x.x` → `[PRIVATE_IP]` |
 
+**Note:** The old over-broad AWS secret key regex (which matched any 40-char base64 string) has been replaced with a context-aware pattern that only flags AWS secrets near AKIA access keys.
+
 Critical and high-severity redactions automatically generate alerts.
 
 ## Compliance Mapping
 
-Agent events are auto-mapped to regulatory controls:
+Agent events are auto-mapped to regulatory controls with `pending` status (not auto-compliant):
 
 | Regulation | Control | Trigger |
 |------------|---------|---------|
@@ -195,13 +223,33 @@ Agent events are auto-mapped to regulatory controls:
 | HIPAA PHI-LOG | PHI access logging | `data:read:*`, `api:call:*` + phi data |
 | FINRA 4511 | Financial audit trails | `trade:*`, `execute:*` + financial_data |
 
+## Policy Engine
+
+### Condition Rules
+
+Policies now support optional `conditions` for context-aware evaluation:
+
+```json
+{
+  "action": "data:read",
+  "resource": "*",
+  "effect": "deny",
+  "conditions": {
+    "data_classification": "confidential"
+  }
+}
+```
+
+Supported condition operators: `eq` (exact match), `neq` (not equal), `in` (list membership), `contains` (substring).
+
 ## MCP Server
 
-The MCP server acts as a non-bypassable proxy for AI agents. It exposes tools for:
+The MCP server provides policy evaluation and audit logging. It does **not** proxy or execute tool calls — it returns a permission decision that the calling agent must respect.
 
 | Tool | Description |
 |------|-------------|
 | `gate_action` | Evaluate policy decision before execution |
+| `evaluate_tool_call` | Evaluate policy for a tool call (returns decision only, does NOT execute) |
 | `register_agent` | Register a new AI agent |
 | `log_event` | Log an agent action event |
 | `query_compliance` | Query compliance evidence |
@@ -215,7 +263,11 @@ Add to your MCP configuration (`~/.claude/mcp.json` for OpenClaw or Claude Code)
   "mcpServers": {
     "ai-agent-security-monitor": {
       "command": "npx",
-      "args": ["tsx", "src/mcp/server.ts"]
+      "args": ["tsx", "src/mcp/server.ts"],
+      "env": {
+        "API_BASE_URL": "http://localhost:8000",
+        "API_KEY": "your-api-key-here"
+      }
     }
   }
 }
@@ -229,10 +281,9 @@ Add to your MCP configuration (`~/.claude/mcp.json` for OpenClaw or Claude Code)
 | Language | TypeScript |
 | API | Fastify |
 | Database | PostgreSQL 16+ |
-| Queue | BullMQ / Redis |
 | MCP | @modelcontextprotocol/sdk |
 | Container | Docker Compose |
-| Testing | Vitest (80 tests) |
+| Testing | Vitest (86 tests) |
 
 ## Project Structure
 
@@ -241,14 +292,16 @@ ai-agent-security-monitor/
 ├── src/
 │   ├── api/              # Fastify API server + Swagger
 │   ├── mcp/              # MCP security server
-│   ├── policy/           # Policy evaluation engine
+│   ├── policy/           # Policy evaluation engine (with conditions)
 │   ├── agents/           # Agent registry
 │   ├── compliance/       # Compliance mapping (GDPR, AI Act, CCPA, HIPAA, FINRA)
-│   ├── security/         # Sensitive data redaction (18+ patterns)
-│   ├── services/         # Discovery, behavior baselines, security scarlet
+│   ├── security/         # Sensitive data redaction (17 patterns)
+│   ├── services/         # Discovery (stubs), behavior baselines, scarlet integration
+│   ├── types.ts          # Canonical type definitions
 │   └── db/               # Database initialization
 ├── scripts/              # Migration + seed scripts
-├── tests/                # 80 tests across 5 files
+├── sdk/                  # Client SDK (Node.js)
+├── tests/                # 86 tests across 5 files
 │   ├── policy.test.ts
 │   ├── redaction.test.ts
 │   ├── compliance.test.ts
@@ -257,6 +310,15 @@ ai-agent-security-monitor/
 ├── docker-compose.yml
 └── package.json
 ```
+
+## Security Considerations
+
+- **Authentication**: Set `API_KEY` env var to enable auth on all endpoints. Without it, the API is open (dev mode only).
+- **CORS**: Configurable via `CORS_ORIGINS` env var (comma-separated). Defaults to `true` (all origins) for development.
+- **Event logging**: Agent ID is taken from the URL path (`:id`), not the request body, to prevent ID spoofing.
+- **Hash chain**: Event hashes include all fields (agent_id, event_type, action, resource, result, details, timestamp).
+- **Certificates**: Policy evaluation certificates use `crypto.randomUUID()` (CSPRNG), not `Math.random()`.
+- **Redaction**: The AWS secret key regex now requires proximity to an AKIA access key to avoid false positives.
 
 ## License
 

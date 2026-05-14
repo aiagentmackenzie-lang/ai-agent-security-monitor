@@ -57,6 +57,13 @@ export const DEFAULT_BASELINES: BehaviorBaseline[] = [
     typical_hours: ['6-22'],
     resource_access_patterns: ['skill:*', 'tool:*', 'mcp:*'],
   },
+  {
+    agent_type: 'openai_agents',
+    action_patterns: ['tool_call', 'handoff', 'agent_run', 'function_call'],
+    event_frequency: 120,
+    typical_hours: ['8-20'],
+    resource_access_patterns: ['api:*', 'tool:*', 'function:*'],
+  },
 ];
 
 export function detectAnomalies(
@@ -72,22 +79,23 @@ export function detectAnomalies(
   const baseline = baselines.find(b => b.agent_type === agentType);
   if (!baseline) return anomalies;
 
-  const frequencyAnomaly = checkFrequencyAnomaly(recentEvents, baseline, cfg);
+  const frequencyAnomaly = checkFrequencyAnomaly(agentId, recentEvents, baseline, cfg);
   if (frequencyAnomaly) anomalies.push(frequencyAnomaly);
 
-  const actionAnomaly = checkUnusualActions(recentEvents, baseline);
+  const actionAnomaly = checkUnusualActions(agentId, recentEvents, baseline);
   if (actionAnomaly) anomalies.push(actionAnomaly);
 
-  const offHoursAnomaly = checkOffHoursActivity(recentEvents, baseline, cfg);
+  const offHoursAnomaly = checkOffHoursActivity(agentId, recentEvents, baseline, cfg);
   if (offHoursAnomaly) anomalies.push(offHoursAnomaly);
 
-  const resourceAnomaly = checkNewResourceAccess(recentEvents, baseline);
+  const resourceAnomaly = checkNewResourceAccess(agentId, recentEvents, baseline);
   if (resourceAnomaly) anomalies.push(resourceAnomaly);
 
   return anomalies;
 }
 
 function checkFrequencyAnomaly(
+  agentId: string,
   events: Array<{ action: string; created_at: Date; resource: string }>,
   baseline: BehaviorBaseline,
   config: BaselineConfig
@@ -97,12 +105,14 @@ function checkFrequencyAnomaly(
     return hour >= 9 && hour <= 17;
   });
 
-  const avgEventsPerHour = hourEvents.length / 24;
+  // FIX: Divide by the number of business hours (9), not total hours (24)
+  const businessHours = 9;
+  const avgEventsPerHour = hourEvents.length / businessHours;
   const expectedRate = baseline.event_frequency / 24;
 
   if (avgEventsPerHour > expectedRate * (1 + config.frequency_threshold_stddev)) {
     return {
-      agent_id: '',
+      agent_id: agentId,
       anomaly_type: 'frequency_spike',
       severity: 'high',
       description: `Event frequency ${avgEventsPerHour.toFixed(1)}/hr exceeds baseline ${expectedRate.toFixed(1)}/hr by ${config.frequency_threshold_stddev} stddev`,
@@ -114,6 +124,7 @@ function checkFrequencyAnomaly(
 }
 
 function checkUnusualActions(
+  agentId: string,
   events: Array<{ action: string; created_at: Date; resource: string }>,
   baseline: BehaviorBaseline
 ): BehaviorAnomaly | null {
@@ -124,7 +135,7 @@ function checkUnusualActions(
 
   if (unusualActions.length > events.length * 0.3) {
     return {
-      agent_id: '',
+      agent_id: agentId,
       anomaly_type: 'unusual_action',
       severity: 'medium',
       description: `Agent performing ${unusualActions.length} unusual actions not in baseline pattern`,
@@ -136,6 +147,7 @@ function checkUnusualActions(
 }
 
 function checkOffHoursActivity(
+  agentId: string,
   events: Array<{ action: string; created_at: Date; resource: string }>,
   baseline: BehaviorBaseline,
   config: BaselineConfig
@@ -147,7 +159,7 @@ function checkOffHoursActivity(
 
   if (offHoursEvents.length > baseline.event_frequency * 0.1) {
     return {
-      agent_id: '',
+      agent_id: agentId,
       anomaly_type: 'off_hours_activity',
       severity: 'low',
       description: `${offHoursEvents.length} events detected outside typical business hours`,
@@ -159,6 +171,7 @@ function checkOffHoursActivity(
 }
 
 function checkNewResourceAccess(
+  agentId: string,
   events: Array<{ action: string; created_at: Date; resource: string }>,
   baseline: BehaviorBaseline
 ): BehaviorAnomaly | null {
@@ -171,7 +184,7 @@ function checkNewResourceAccess(
 
   if (newResources.length > 5) {
     return {
-      agent_id: '',
+      agent_id: agentId,
       anomaly_type: 'new_resource_access',
       severity: 'medium',
       description: `Agent accessing ${newResources.length} new resource types not in baseline`,

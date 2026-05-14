@@ -82,6 +82,22 @@ describe('Redaction - String Patterns', () => {
     expect(result).toContain('[PRIVATE_IP]');
     expect(result).not.toContain('192.168.1.100');
   });
+
+  it('should NOT redact arbitrary 40-char base64 strings (aws_secret_key fix)', () => {
+    // The old regex /\b([0-9a-zA-Z/+]{40})\b/ would match this - the fixed one should not
+    const { result, flags } = redactString('Transaction ID: 1234567890123456789012345678901234567890');
+    // A plain 40-digit number should NOT be flagged as an AWS secret key
+    const awsSecretFlag = flags.find(f => f.pattern === 'aws_secret_key');
+    expect(awsSecretFlag).toBeUndefined();
+  });
+
+  it('should redact Gemini keys (AIzaSy prefix) with correct label', () => {
+    // Gemini key: AIzaSy + 33 chars = 39 total
+    const { result, flags } = redactString('Key: AIzaSyBa123456789abcdefghijklmnopqrstuv');
+    expect(result).toContain('[GEMINI_API_KEY]');
+    const geminiFlag = flags.find(f => f.pattern === 'google_gemini_key');
+    expect(geminiFlag).toBeDefined();
+  });
 });
 
 describe('Redaction - Object Recursion', () => {

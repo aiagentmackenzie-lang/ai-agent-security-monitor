@@ -6,12 +6,22 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 const API_BASE = process.env.API_BASE_URL || 'http://localhost:8000';
+const API_KEY = process.env.API_KEY || '';
 
 async function apiCall<T>(endpoint: string, method: string, body?: unknown): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
+  const headers: Record<string, string> = {};
+  if (body) {
+    headers['Content-Type'] = 'application/json';
+  }
+  // FIX C-04: Pass API key for authentication when configured
+  if (API_KEY) {
+    headers['X-API-Key'] = API_KEY;
+  }
+
   const response = await fetch(url, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
 
@@ -40,7 +50,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: 'gate_action',
-        description: 'Evaluate a policy decision before agent action execution. Returns allow/deny with signed certificate.',
+        description: 'Evaluate a policy decision before agent action execution. Returns allow/deny with a cryptographically-signed certificate.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -61,13 +71,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: 'enforced_tool_call',
-        description: 'Strong enforcement tier: Proxy a tool call through policy evaluation. Blocks if denied, executes if permitted. Use this for critical tool access control.',
+        name: 'evaluate_tool_call',
+        description: 'Evaluate policy for a tool call. Returns permitted/denied but does NOT execute the tool — the calling agent must execute the tool itself based on the decision. Use for gating tool access with audit trail.',
         inputSchema: {
           type: 'object',
           properties: {
             agent_id: { type: 'string', description: 'Unique agent identifier' },
-            tool_name: { type: 'string', description: 'Name of the tool being proxied' },
+            tool_name: { type: 'string', description: 'Name of the tool being evaluated' },
             tool_args: { type: 'object', description: 'Arguments being passed to the tool' },
             action: { type: 'string', description: 'Action mapped to the tool (e.g., tool:openai, tool:database)' },
             resource: { type: 'string', description: 'Resource being accessed by the tool' },
@@ -161,7 +171,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      case 'enforced_tool_call': {
+      case 'evaluate_tool_call': {
         const { agent_id, tool_name, tool_args, action, resource, context } = args as {
           agent_id: string;
           tool_name: string;
@@ -212,6 +222,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   reason: evalResult.reason,
                   certificate_id: evalResult.certificate_id,
                   event_id: logResult.event.id,
+                  note: 'Tool execution was NOT performed. The calling agent must respect the denied decision.',
                 }),
               },
             ],
@@ -227,12 +238,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 status: 'permitted',
                 certificate_id: evalResult.certificate_id,
                 policy_id: evalResult.policy_id,
-                tool_execution: {
+                tool_evaluation: {
                   tool_name,
                   args: tool_args,
                   permitted: true,
                   evaluated_at: evalResult.evaluated_at,
                 },
+                note: 'Policy evaluation passed. The calling agent may proceed with execution.',
               }),
             },
           ],
@@ -262,7 +274,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 agent_id: result.agent.id,
                 name: result.agent.name,
                 type: result.agent.type,
-                status: 'registered',
+                registered: true,
                 created_at: new Date().toISOString(),
               }),
             },

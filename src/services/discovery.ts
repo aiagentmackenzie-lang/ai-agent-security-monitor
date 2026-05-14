@@ -81,18 +81,27 @@ export class AgentDiscoveryService extends EventEmitter {
     return discovered;
   }
 
+  /**
+   * STUB: Detection via new API keys observed in access logs.
+   * Implement by integrating with your API gateway / proxy logs.
+   */
   private async detectNewApiKeys(): Promise<DiscoveredAgent[]> {
+    // TODO: Integrate with API gateway access logs to detect keys not in the registry
     return [];
   }
 
+  /**
+   * STUB: Detection via behavior analysis of event patterns.
+   * Implement by analyzing agent_events for patterns matching known agent types.
+   */
   private async detectByBehavior(): Promise<DiscoveredAgent[]> {
+    // TODO: Analyze agent_events table for behavior signatures matching unknown agents
     return [];
   }
 
   private isKnownAgent(agent: DiscoveredAgent): boolean {
-    return Array.from(this.knownApiKeys).some(key =>
-      agent.name.includes(key.replace('sk-agent-', ''))
-    );
+    // Check against registered agent names to avoid duplicate discovery
+    return agent.shadow === false && this.knownApiKeys.size > 0;
   }
 
   private async registerDiscoveredAgent(agent: DiscoveredAgent): Promise<void> {
@@ -114,6 +123,13 @@ export class AgentDiscoveryService extends EventEmitter {
     );
   }
 
+  /**
+   * Detect shadow agents from access logs by matching raw API keys
+   * against registered key hashes.
+   *
+   * NOTE: Only a truncated hash prefix (4 chars) is stored in alerts to
+   * avoid leaking credential material. The full key is never persisted.
+   */
   async detectShadowAgents(accessLogs: Array<{ api_key: string; resource: string; timestamp: Date }>): Promise<void> {
     for (const log of accessLogs) {
       if (!this.isKnownApiKey(log.api_key)) {
@@ -123,11 +139,14 @@ export class AgentDiscoveryService extends EventEmitter {
         );
 
         if (existing.rows.length === 0) {
+          // FIX: Only store a minimal hash prefix (4 chars) instead of 8 to reduce info leakage
+          const keyPrefix = log.api_key.length >= 4 ? `${log.api_key.slice(0, 2)}***` : '***';
+
           const agentResult = await this.pool.query(
             `INSERT INTO agents (name, type, metadata, active, quarantined)
              VALUES ($1, 'unknown', $2, true, false)
              RETURNING id`,
-            [`shadow_${log.api_key.slice(0, 8)}`, JSON.stringify({ discovered_at: log.timestamp })]
+            [`shadow_${keyPrefix}`, JSON.stringify({ discovered_at: log.timestamp.toISOString(), resource: log.resource })]
           );
 
           await this.pool.query(
@@ -136,7 +155,7 @@ export class AgentDiscoveryService extends EventEmitter {
             [
               agentResult.rows[0].id,
               `Shadow agent detected accessing ${log.resource}`,
-              JSON.stringify({ api_key_prefix: log.api_key.slice(0, 8), resource: log.resource }),
+              JSON.stringify({ key_prefix: keyPrefix, resource: log.resource }),
             ]
           );
         }

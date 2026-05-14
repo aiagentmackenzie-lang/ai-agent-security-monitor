@@ -34,7 +34,8 @@ describe('Compliance Mapper - Event Mapping', () => {
     const aiAct = records.find(r => r.regulation === 'ai_act');
     expect(aiAct).toBeDefined();
     expect(aiAct!.control_id).toBe('ART-12');
-    expect(aiAct!.status).toBe('compliant');
+    // FIX: newly mapped records should be 'pending', not auto-compliant
+    expect(aiAct!.status).toBe('pending');
   });
 
   it('should map GDPR for decision-making actions', () => {
@@ -71,10 +72,10 @@ describe('Compliance Mapper - Event Mapping', () => {
     expect(finra!.control_id).toBe('FINRA-4511');
   });
 
-  it('should return empty when no regulation matches', () => {
+  it('should return empty when no regulation matches (except AI Act wildcard)', () => {
     const records = mapEventToCompliance('agt_1', 'ping', 'health:check', '/health', {});
-    // Only AI Act wildcard matches everything
-    expect(records.length).toBeGreaterThanOrEqual(0);
+    // AI Act wildcard matches everything
+    expect(records.length).toBeGreaterThanOrEqual(1);
   });
 
   it('should include evidence in compliance records', () => {
@@ -95,6 +96,15 @@ describe('Compliance Mapper - Event Mapping', () => {
     expect(records.length).toBeGreaterThanOrEqual(2);
     const regulationNames = records.map(r => r.regulation);
     expect(regulationNames).toContain('ai_act');
+  });
+
+  it('should always set status to pending for newly mapped records', () => {
+    const records = mapEventToCompliance('agt_1', 'data:read:pii', 'data:read', '/api/users', {
+      data_type: 'pii',
+    });
+    for (const record of records) {
+      expect(record.status).toBe('pending');
+    }
   });
 });
 
@@ -149,7 +159,7 @@ describe('Compliance Mapper - Glob Pattern Matching', () => {
     expect(finra).toBeDefined();
   });
 
-  it('should not match unrelated actions', () => {
+  it('should not match unrelated actions (except AI Act wildcard)', () => {
     const records = mapEventToCompliance('agt_1', 'action', 'health:check', '/health', {
       data_type: 'system_data',
     });

@@ -1,39 +1,47 @@
-export interface PolicyRule {
-  action: string;
-  resource: string;
-  effect: 'permit' | 'deny';
-  conditions?: Record<string, unknown>;
-}
+import { randomUUID } from 'crypto';
+import type { PolicyRule, Policy, PolicyEvaluationRequest, PolicyEvaluationResult } from '../types.js';
 
-export interface Policy {
-  id: string;
-  name: string;
-  description?: string;
-  rules: PolicyRule[];
-  agent_ids: string[];
-  active: boolean;
-  /** When 'deny', unmatched actions are blocked (allowlist mode). When 'permit' or unset, unmatched actions are allowed (denylist mode — current default). */
-  default_effect?: 'permit' | 'deny';
-}
+export type { PolicyRule, Policy, PolicyEvaluationRequest, PolicyEvaluationResult };
 
-export interface PolicyEvaluationRequest {
-  agent_id: string;
-  action: string;
-  resource: string;
-  context?: {
-    user?: string;
-    session_id?: string;
-    data_classification?: string;
-    timestamp?: string;
-  };
-}
+/**
+ * Evaluate simple conditions against request context.
+ * Supported condition operators:
+ *   - { field: "value" }           → exact string match
+ *   - { field: { eq: "value" } }   → exact match
+ *   - { field: { neq: "value" } }  → not-equal
+ *   - { field: { in: ["a","b"] } } → value in list
+ *   - { field: { contains: "x" } }→ string contains
+ *
+ * All conditions within a rule must pass (AND logic).
+ */
+function evaluateConditions(
+  conditions: Record<string, unknown>,
+  context: NonNullable<PolicyEvaluationRequest['context']>
+): boolean {
+  for (const [field, expected] of Object.entries(conditions)) {
+    const actual = context[field as keyof typeof context];
 
-export interface PolicyEvaluationResult {
-  allowed: boolean;
-  reason: string;
-  policy_id?: string;
-  certificate_id?: string;
-  evaluated_at: string;
+    // Exact value match
+    if (typeof expected === 'string') {
+      if (actual !== expected) return false;
+      continue;
+    }
+
+    // Object operator match
+    if (typeof expected === 'object' && expected !== null) {
+      const op = expected as Record<string, unknown>;
+
+      if ('eq' in op && actual !== op.eq) return false;
+      if ('neq' in op && actual === op.neq) return false;
+      if ('in' in op && Array.isArray(op.in) && !op.in.includes(actual)) return false;
+      if ('contains' in op && typeof actual === 'string' && !actual.includes(op.contains as string)) return false;
+      continue;
+    }
+
+    return false; // unsupported condition value type
+  }
+
+  return true;
 }
 
 export function evaluatePolicy(
@@ -53,11 +61,19 @@ export function evaluatePolicy(
       const resourceMatch = matchPattern(request.resource, rule.resource);
 
       if (actionMatch && resourceMatch) {
+        // Evaluate conditions if present
+        if (rule.conditions && request.context) {
+          if (!evaluateConditions(rule.conditions, request.context)) {
+            // Conditions not met — skip this rule
+            continue;
+          }
+        }
+
         return {
           allowed: rule.effect === 'permit',
           reason: rule.effect === 'deny' ? `Denied by policy: ${policy.name}` : `Permitted by policy: ${policy.name}`,
           policy_id: policy.id,
-          certificate_id: `cert_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          certificate_id: `cert_${randomUUID()}`,
           evaluated_at: new Date().toISOString(),
         };
       }
@@ -76,14 +92,14 @@ export function evaluatePolicy(
       allowed: false,
       reason: `Denied by default — allowlist policy '${allowlistPolicy.name}' has no matching permit rule`,
       policy_id: allowlistPolicy.id,
-      certificate_id: `cert_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      certificate_id: `cert_${randomUUID()}`,
       evaluated_at: new Date().toISOString(),
     };
   }
 
   return {
     allowed: true,
-    reason: 'Default allow - no matching policy found',
+    reason: 'Default allow — no matching policy found',
     evaluated_at: new Date().toISOString(),
   };
 }

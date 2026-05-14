@@ -37,7 +37,7 @@ export async function initDb(connectionString: string) {
       rules JSONB NOT NULL DEFAULT '[]',
       agent_ids TEXT[] DEFAULT ARRAY['*'],
       active BOOLEAN DEFAULT true,
-      default_effect VARCHAR(10), -- 'permit' or 'deny' — when 'deny', unmatched actions are blocked (allowlist mode)
+      default_effect VARCHAR(10), -- 'deny' — when 'deny', unmatched actions are blocked (allowlist mode). No value = default allow.
       priority INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
@@ -69,7 +69,9 @@ export async function initDb(connectionString: string) {
     CREATE INDEX IF NOT EXISTS idx_agent_events_agent_id ON agent_events(agent_id);
     CREATE INDEX IF NOT EXISTS idx_agent_events_created_at ON agent_events(created_at);
     CREATE INDEX IF NOT EXISTS idx_compliance_records_agent_id ON compliance_records(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_compliance_records_status ON compliance_records(status);
     CREATE INDEX IF NOT EXISTS idx_policies_active ON policies(active);
+    CREATE INDEX IF NOT EXISTS idx_policies_priority ON policies(priority DESC);
     CREATE INDEX IF NOT EXISTS idx_alerts_agent_id ON alerts(agent_id);
     CREATE INDEX IF NOT EXISTS idx_alerts_acknowledged ON alerts(acknowledged);
   `);

@@ -23,6 +23,8 @@ export interface GateResponse {
   allowed: boolean;
   reason: string;
   certificateId?: string;
+  policyId?: string;
+  evaluatedAt?: string;
   agentId: string;
   action: string;
   resource: string;
@@ -51,12 +53,24 @@ async function hashKey(key: string): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * Map SDK camelCase keys to API snake_case keys for context objects.
+ */
+function mapContext(context?: GateRequest['context']): Record<string, string | undefined> | undefined {
+  if (!context) return undefined;
+  return {
+    user: context.user,
+    session_id: context.sessionId,
+    data_classification: context.dataClassification,
+  };
+}
+
 function createClient(baseUrl: string, apiKey?: string): SecurityMonitorClient {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
   if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`;
+    headers['X-API-Key'] = apiKey;
   }
 
   return {
@@ -85,11 +99,31 @@ function createClient(baseUrl: string, apiKey?: string): SecurityMonitorClient {
           agent_id: request.agentId,
           action: request.action,
           resource: request.resource,
-          context: request.context,
+          context: mapContext(request.context),
         }),
       });
       if (!response.ok) throw new Error(`Gate check failed: ${response.statusText}`);
-      return response.json() as Promise<GateResponse>;
+      const apiData = await response.json() as {
+        allowed: boolean;
+        reason: string;
+        policy_id?: string;
+        certificate_id?: string;
+        evaluated_at?: string;
+        agent_id: string;
+        action: string;
+        resource: string;
+      };
+
+      return {
+        allowed: apiData.allowed,
+        reason: apiData.reason,
+        policyId: apiData.policy_id,
+        certificateId: apiData.certificate_id,
+        evaluatedAt: apiData.evaluated_at,
+        agentId: apiData.agent_id,
+        action: apiData.action,
+        resource: apiData.resource,
+      };
     },
 
     log: async function(event: EventLog): Promise<{ id: string }> {
