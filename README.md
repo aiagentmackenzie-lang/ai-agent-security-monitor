@@ -3,7 +3,7 @@
 [![Node.js](https://img.shields.io/badge/node-20%2B-green?logo=node.js)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Fastify](https://img.shields.io/badge/framework-Fastify-009688?logo=fastapi)](https://fastify.dev/)
-[![Tests](https://img.shields.io/badge/tests-154%20passing-brightgreen)](./tests)
+[![Tests](https://img.shields.io/badge/tests-157%20passing-brightgreen)](./tests)
 [![Coverage](https://img.shields.io/badge/coverage-82%25-brightgreen)](./vitest.config.ts)
 [![CI](https://img.shields.io/badge/CI-github%20actions-blue)](./.github/workflows/ci.yml)
 [![OWASP Agentic](https://img.shields.io/badge/OWASP-Agentic%20Top%2010%202026-purple)](https://genai.owasp.org/)
@@ -50,7 +50,7 @@ This platform solves that at three layers:
 | 🔍 Shadow-Agent Discovery | Access-log key scan (hash-based, privacy-preserving) + behavior-scan (misregistered-type inference) — **no stubs** |
 | 🤖 MCP Integration | `gate_action`, `evaluate_tool_call` (decision-only, never executes), `register_agent`, `log_event`, `query_compliance` |
 | 🔑 API Key Auth + Rate Limiting | `X-API-Key` auth + Redis-backed rate limiting (`@fastify/rate-limit`) |
-| 📊 Dashboard UI | Single-page dashboard served at `/dashboard/` (agents, alerts, compliance, live stats) |
+| 📊 Dashboard UI | Vite + React single-page dashboard at `/ui/` — overview stats, agents, alerts, policies, behavior-discovery, live auto-refresh; acknowledge alerts inline |
 | 📡 SIEM Forwarding | Optional fire-and-forget forwarding to SecurityScarletAI (`SCARLET_FORWARD_ENABLED=true`) |
 
 ## Quick Start
@@ -77,7 +77,7 @@ npm run db:seed               # optional: demo data
 npm run dev                   # API on :8000 (hot reload)
 ```
 
-- Dashboard UI: `http://localhost:8000/dashboard/`
+- Dashboard UI: `http://localhost:8000/ui/` (Vite + React; `/` and `/dashboard/` redirect there)
 - Swagger: `http://localhost:8000/documentation`
 - Health: `http://localhost:8000/health`
 
@@ -106,12 +106,15 @@ procedures.
 
 ```bash
 npm run dev            # API with hot reload
-npm test               # 154 tests (unit + integration)
+npm run dev:ui         # Vite dev server (proxies API calls to :8000)
+npm test               # 157 tests (unit + integration)
 npm run test:coverage  # coverage report (70% gate)
 npm run typecheck      # TypeScript check
 npm run lint           # ESLint
-npm run build          # compile to dist/
+npm run build          # compile API to dist/
+npm run build:ui       # build the Vite + React dashboard to ui/dist/
 npm run build:sdk      # build the SDK
+npm run smoke          # end-to-end smoke test (boots docker compose stack)
 ```
 
 Integration tests use **testcontainers** (real Postgres in Docker) — no
@@ -123,7 +126,7 @@ external services required. Set `DOCKER_HOST` if using Colima.
 ┌─────────────────────────────────────────────────────────────┐
 │                  AI Agent Security Monitor                   │
 ├─────────────────────────────────────────────────────────────┤
-│  API (Fastify) ─── Swagger UI / Dashboard UI ─────────────  │
+│  API (Fastify) ─── Swagger UI / React Dashboard (/ui/) ───  │
 │  └── Auth (X-API-Key) + Rate limit (Redis)                   │
 │                           │                                  │
 │  MCP Security Server ────┤                                  │
@@ -189,7 +192,7 @@ external services required. Set `DOCKER_HOST` if using Colima.
 ### Dashboard
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/dashboard/` | Single-page dashboard UI |
+| `GET` | `/ui/` | Vite + React dashboard UI (`/` and `/dashboard/` redirect here) |
 | `GET` | `/dashboard/summary` | Agent, event, alert, compliance stats |
 | `GET` | `/dashboard/events/timeline` | Event timeline (parameterized, validated) |
 | `GET` | `/dashboard/compliance/summary` | Compliance breakdown by regulation |
@@ -276,7 +279,8 @@ the decision; denials are logged as `tool_denied` events.
 | Cache/limiter | Redis 7 (optional) |
 | MCP | @modelcontextprotocol/sdk |
 | Container | Docker Compose (multi-stage, non-root) |
-| Testing | Vitest + testcontainers (154 tests, 82% coverage) |
+| UI | Vite 5 + React 18 (TypeScript) |
+| Testing | Vitest + testcontainers (157 tests, 82% coverage) |
 | CI | GitHub Actions |
 
 ## Project Structure
@@ -294,11 +298,11 @@ ai-agent-security-monitor/
 │   ├── config.ts         # Zod-validated config + security gate
 │   ├── types.ts          # Canonical types
 │   └── db/               # Schema init (agents, events, policies, compliance, alerts, access_logs)
-├── dashboard/            # Single-page dashboard UI
+├── ui/                   # Vite + React dashboard (builds to ui/dist, served at /ui/)
 ├── scripts/              # migrate, seed, smoke_test
 ├── sdk/                  # Node SDK (camelCase mapping)
 ├── tests/                # unit + integration (testcontainers) + mcp + sdk
-├── Dockerfile            # multi-stage, non-root
+├── Dockerfile            # multi-stage, non-root (API + SDK + UI build)
 ├── docker-compose.yml    # postgres + redis + api
 ├── vitest.config.ts      # 70% coverage gate
 ├── .github/workflows/    # CI

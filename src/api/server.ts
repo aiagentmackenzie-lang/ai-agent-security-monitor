@@ -1000,21 +1000,31 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<{
     return { behavior_findings: findings };
   });
 
-  // ─── Static dashboard UI ───
-  // Served via an explicit route (not @fastify/static) to avoid prefix
-  // conflicts with the /dashboard/* JSON API routes.
+  // ─── Dashboard UI (Vite + React build served at /ui/) ───
+  // Served via @fastify/static at the /ui/ prefix to avoid any conflict with
+  // the /dashboard/* JSON API routes. The React app calls the API with
+  // absolute paths (/dashboard/summary, /agents, /alerts, ...).
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const uiDir = join(__dirname, '..', '..', 'ui', 'dist');
+  try {
+    const { default: fastifyStatic } = await import('@fastify/static');
+    await fastify.register(fastifyStatic, {
+      root: uiDir,
+      prefix: '/ui/',
+      decorateReply: false,
+    });
+  } catch {
+    // ui/dist may not exist when the UI hasn't been built — skip silently.
+  }
+  // Backward-compatible redirect from the old dashboard HTML path.
   fastify.get('/dashboard/', async (_request, reply) => {
-    const __dirname = dirname(fileURLToPath(import.meta.url));
-    const htmlPath = join(__dirname, '..', '..', 'dashboard', 'index.html');
-    try {
-      const html = await (await import('fs/promises')).readFile(htmlPath, 'utf8');
-      reply.type('text/html').send(html);
-    } catch {
-      reply.code(404).send({ error: 'Dashboard UI not found' });
-    }
+    reply.redirect('/ui/', 301);
   });
   fastify.get('/dashboard', async (_request, reply) => {
-    reply.redirect('/dashboard/', 301);
+    reply.redirect('/ui/', 301);
+  });
+  fastify.get('/', async (_request, reply) => {
+    reply.redirect('/ui/', 302);
   });
 
   const close = async () => {
