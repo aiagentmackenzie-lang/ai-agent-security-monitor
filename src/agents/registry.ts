@@ -1,21 +1,16 @@
 import { randomUUID } from 'crypto';
-import type { Agent, AgentType } from '../types.js';
+import type { Agent, AgentType, AgentEvent } from '../types.js';
 
-export type { Agent, AgentType };
+export type { Agent, AgentType, AgentEvent };
 
-export interface AgentEvent {
-  id: string;
-  agent_id: string;
-  event_type: string;
-  action?: string;
-  resource?: string;
-  result: 'success' | 'denied' | 'error';
-  details: Record<string, unknown>;
-  previous_hash?: string | null;
-  hash: string;
-  created_at: Date;
-}
-
+/**
+ * In-memory factory helpers for constructing Agent and AgentEvent objects.
+ *
+ * NOTE: These produce `agt_<short>` string IDs for test/illustration use. The
+ * live API does NOT use these — the database generates UUIDs for persisted
+ * agents (see `src/db/init.ts`). Do not persist the `agt_` IDs against the
+ * UUID-typed `agent_id` foreign key.
+ */
 export function createAgent(data: Partial<Agent> & { name?: string }): Agent {
   const now = new Date();
   return {

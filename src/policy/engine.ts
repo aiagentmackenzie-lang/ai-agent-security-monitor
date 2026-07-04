@@ -61,12 +61,21 @@ export function evaluatePolicy(
       const resourceMatch = matchPattern(request.resource, rule.resource);
 
       if (actionMatch && resourceMatch) {
-        // Evaluate conditions if present
-        if (rule.conditions && request.context) {
-          if (!evaluateConditions(rule.conditions, request.context)) {
-            // Conditions not met — skip this rule
-            continue;
+        // Evaluate conditions if present.
+        // Production fail-closed semantics:
+        //   - A conditional DENY with no context still fires (over-block rather
+        //     than under-block — safer for a governance product).
+        //   - A conditional PERMIT with no context does NOT fire (falls through
+        //     to default-deny in allowlist mode) — fail-closed on permit.
+        if (rule.conditions) {
+          if (request.context) {
+            if (!evaluateConditions(rule.conditions, request.context)) {
+              continue; // conditions not met — skip this rule
+            }
+          } else if (rule.effect === 'permit') {
+            continue; // permit rule cannot be validated without context — skip
           }
+          // deny rule with conditions but no context → falls through and fires
         }
 
         return {

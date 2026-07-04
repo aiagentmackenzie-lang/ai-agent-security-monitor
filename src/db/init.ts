@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { fileURLToPath } from 'url';
 
 export async function initDb(connectionString: string) {
   const pool = new Pool({ connectionString });
@@ -66,6 +67,15 @@ export async function initDb(connectionString: string) {
       created_at TIMESTAMP DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS access_logs (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      api_key_hash VARCHAR(64) NOT NULL,
+      key_prefix VARCHAR(8) NOT NULL,
+      resource VARCHAR(255) NOT NULL,
+      observed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      ingested_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
     CREATE INDEX IF NOT EXISTS idx_agent_events_agent_id ON agent_events(agent_id);
     CREATE INDEX IF NOT EXISTS idx_agent_events_created_at ON agent_events(created_at);
     CREATE INDEX IF NOT EXISTS idx_compliance_records_agent_id ON compliance_records(agent_id);
@@ -74,13 +84,15 @@ export async function initDb(connectionString: string) {
     CREATE INDEX IF NOT EXISTS idx_policies_priority ON policies(priority DESC);
     CREATE INDEX IF NOT EXISTS idx_alerts_agent_id ON alerts(agent_id);
     CREATE INDEX IF NOT EXISTS idx_alerts_acknowledged ON alerts(acknowledged);
+    CREATE INDEX IF NOT EXISTS idx_access_logs_api_key_hash ON access_logs(api_key_hash);
+    CREATE INDEX IF NOT EXISTS idx_access_logs_observed_at ON access_logs(observed_at);
   `);
 
   console.log('Database initialized successfully');
   await pool.end();
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
   initDb(process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/ai_agent_security')
     .then(() => process.exit(0))
     .catch((e) => { console.error(e); process.exit(1); });

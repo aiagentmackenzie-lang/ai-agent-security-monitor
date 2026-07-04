@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Agent Security Monitor — Dashboard</title>
+  <style>
+    :root {
+      --bg: #0b0f17; --panel: #141b26; --panel-2: #1c2433; --border: #243044;
+      --text: #e6edf3; --muted: #8b98a9; --accent: #3dd68c; --danger: #ff6b6b;
+      --warn: #ffb454; --crit: #ff4d6d; --info: #4dabf7;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+    header { padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+    header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+    header h1 span { color: var(--accent); }
+    header .meta { font-size: 12px; color: var(--muted); }
+    main { padding: 24px 28px; max-width: 1200px; margin: 0 auto; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 28px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+    .card .label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+    .card .value { font-size: 30px; font-weight: 700; margin-top: 6px; }
+    .card .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .value.danger { color: var(--danger); }
+    .value.warn { color: var(--warn); }
+    .value.ok { color: var(--accent); }
+    section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 20px; }
+    section h2 { font-size: 14px; margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--border); color: var(--text); display: flex; justify-content: space-between; }
+    section h2 .count { color: var(--muted); font-weight: 400; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 18px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+    tr:last-child td { border-bottom: none; }
+    td.mono { font-family: ui-monospace, 'SF Mono', monospace; font-size: 12px; color: var(--muted); }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge.crit { background: rgba(255,77,109,.15); color: var(--crit); }
+    .badge.high { background: rgba(255,107,107,.15); color: var(--danger); }
+    .badge.med { background: rgba(255,180,84,.15); color: var(--warn); }
+    .badge.low { background: rgba(141,152,169,.15); color: var(--muted); }
+    .badge.ok { background: rgba(61,214,140,.15); color: var(--accent); }
+    .badge.deny { background: rgba(255,77,109,.15); color: var(--crit); }
+    .empty { padding: 24px; text-align: center; color: var(--muted); }
+    .refresh { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+    .refresh:hover { border-color: var(--accent); }
+    a { color: var(--info); text-decoration: none; }
+    .footer { text-align: center; color: var(--muted); font-size: 12px; padding: 20px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AI Agent Security <span>Monitor</span></h1>
+    <div class="meta">Runtime governance · <a href="/documentation" target="_blank">API docs</a> · <button class="refresh" onclick="load()">↻ Refresh</button></div>
+  </header>
+  <main>
+    <div class="grid" id="stats"></div>
+
+    <section>
+      <h2>Agents <span class="count" id="agents-count"></span></h2>
+      <div id="agents"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section>
+      <h2>Recent alerts <span class="count" id="alerts-count"></span></h2>
+      <div id="alerts"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section>
+      <h2>Compliance by regulation</h2>
+      <div id="compliance"><div class="empty">Loading…</div></div>
+    </section>
+  </main>
+  <div class="footer">AI Agent Security Monitor · OWASP Agentic Top 10 2026 · tamper-evident audit trail</div>
+
+<script>
+const API = '';
+function sevBadge(s) {
+  const map = { critical: 'crit', high: 'high', medium: 'med', low: 'low' };
+  return `<span class="badge ${map[s] || 'low'}">${s}</span>`;
+}
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function get(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) return null;
+  return r.json();
+}
+
+async function load() {
+  const summary = await get('/dashboard/summary');
+  if (!summary) { document.getElementById('stats').innerHTML = '<div class="card"><div class="label">Error</div><div class="value danger">API unreachable</div></div>'; return; }
+
+  const stats = [
+    { label: 'Total Agents', value: summary.agents.total, sub: `${summary.agents.active} active` },
+    { label: 'Quarantined', value: summary.agents.quarantined, cls: summary.agents.quarantined ? 'danger' : '' },
+    { label: 'Total Events', value: summary.events.total, sub: `${summary.events.denied} denied` },
+    { label: 'Critical Alerts', value: summary.alerts.critical, cls: summary.alerts.critical ? 'danger' : 'ok' },
+    { label: 'Unack. Alerts', value: summary.alerts.unacknowledged, cls: summary.alerts.unacknowledged ? 'warn' : 'ok' },
+  ];
+  document.getElementById('stats').innerHTML = stats.map(s =>
+    `<div class="card"><div class="label">${s.label}</div><div class="value ${s.cls||''}">${s.value}</div>${s.sub?`<div class="sub">${s.sub}</div>`:''}</div>`
+  ).join('');
+
+  const agents = await get('/agents');
+  const agentsEl = document.getElementById('agents');
+  if (agents && agents.agents.length) {
+    document.getElementById('agents-count').textContent = agents.agents.length;
+    agentsEl.innerHTML = `<table><thead><tr><th>Name</th><th>Type</th><th>Owner</th><th>Status</th><th>ID</th></tr></thead><tbody>
+      ${agents.agents.map(a => `<tr>
+        <td>${esc(a.name)}</td><td>${esc(a.type)}</td><td>${esc(a.owner||'—')}</td>
+        <td>${a.quarantined ? sevBadge('high')+' quarantined' : (a.active ? '<span class="badge ok">active</span>' : '<span class="badge low">inactive</span>')}</td>
+        <td class="mono">${esc(a.id)}</td></tr>`).join('')}
+    </tbody></table>`;
+  } else { agentsEl.innerHTML = '<div class="empty">No agents registered</div>'; }
+
+  const alerts = await get('/alerts?acknowledged=false');
+  const alertsEl = document.getElementById('alerts');
+  if (alerts && alerts.alerts.length) {
+    document.getElementById('alerts-count').textContent = alerts.alerts.length;
+    alertsEl.innerHTML = `<table><thead><tr><th>Severity</th><th>Type</th><th>Message</th><th>Time</th></tr></thead><tbody>
+      ${alerts.alerts.map(a => `<tr><td>${sevBadge(a.severity)}</td><td>${esc(a.type)}</td><td>${esc(a.message)}</td><td class="mono">${esc(new Date(a.created_at).toLocaleString())}</td></tr>`).join('')}
+    </tbody></table>`;
+  } else { alertsEl.innerHTML = '<div class="empty">No unacknowledged alerts 🎉</div>'; }
+
+  const comp = await get('/dashboard/compliance/summary');
+  const compEl = document.getElementById('compliance');
+  if (comp && comp.by_regulation.length) {
+    compEl.innerHTML = `<table><thead><tr><th>Regulation</th><th>Total</th><th>Compliant</th><th>Pending</th><th>Gaps</th></tr></thead><tbody>
+      ${comp.by_regulation.map(r => `<tr><td>${esc(r.regulation.toUpperCase())}</td><td>${r.total}</td><td class="ok">${r.compliant}</td><td>${r.pending}</td><td class="${r.gaps?'danger':''}">${r.gaps}</td></tr>`).join('')}
+    </tbody></table>
+    <div style="padding:12px 18px;color:var(--muted);font-size:12px">Overall compliance rate: <b style="color:var(--text)">${comp.overall.compliance_rate}%</b></div>`;
+  } else { compEl.innerHTML = '<div class="empty">No compliance records yet</div>'; }
+}
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>
