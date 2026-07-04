@@ -1,23 +1,28 @@
-# ── Build stage ──
+# ── UI build stage (Vite + React) ──
+FROM node:20-alpine AS ui-build
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json* ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
+# ── API build stage ──
 FROM node:20-alpine AS build
 WORKDIR /app
 
-# Copy lockfile + manifests first for cacheable deps
 COPY package.json package-lock.json* ./
 COPY sdk/package.json ./sdk/
 COPY sdk/tsconfig.json ./sdk/
-
 RUN npm ci --ignore-scripts
 
-# Copy source and build
 COPY tsconfig.json eslint.config.js vitest.config.ts ./
 COPY src ./src
 COPY scripts ./scripts
 COPY sdk/src ./sdk/src
 COPY tests ./tests
-COPY dashboard ./dashboard
 
 RUN npm run build
+RUN npm run build:sdk
 
 # ── Runtime stage ──
 FROM node:20-alpine AS runtime
@@ -26,7 +31,6 @@ WORKDIR /app
 ENV NODE_ENV=production
 # Refuse to start without API_KEY unless DEV_MODE=true (enforced in code)
 
-# Non-root user
 RUN addgroup -S app && adduser -S app -G app
 
 COPY package.json package-lock.json* ./
@@ -34,7 +38,8 @@ COPY sdk/package.json ./sdk/
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
-COPY dashboard ./dashboard
+COPY --from=build /app/sdk/dist ./sdk/dist
+COPY --from=ui-build /ui/dist ./ui/dist
 
 USER app
 EXPOSE 8000

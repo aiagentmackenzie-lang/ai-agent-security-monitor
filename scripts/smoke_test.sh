@@ -111,8 +111,9 @@ SUM=$(curl -sf "$API/dashboard/summary")
 if echo "$SUM" | grep -q '"agents"'; then ok "dashboard summary returned"; else bad "dashboard summary failed"; fi
 
 # ── Dashboard UI loads ──
-c "Dashboard UI"
-if curl -sf "$API/dashboard/" | grep -q 'AI Agent Security'; then ok "dashboard HTML served"; else bad "dashboard HTML missing"; fi
+c "Dashboard UI (Vite+React)"
+if curl -sf "$API/ui/" | grep -q 'root'; then ok "dashboard UI served at /ui/"; else bad "dashboard UI missing at /ui/"; fi
+if curl -s -o /dev/null -w '%{http_code}' "$API/dashboard/" | grep -q '301'; then ok "old /dashboard/ redirects to /ui/"; else bad "old /dashboard/ does not redirect"; fi
 
 # ── MCP server boots ──
 c "MCP server process"

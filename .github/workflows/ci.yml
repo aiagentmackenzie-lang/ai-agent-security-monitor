@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, lift/agent-monitor-production]
+    branches: [main, feature/vite-dashboard]
   pull_request:
     branches: [main]
 
@@ -33,11 +33,14 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Build
+      - name: Build API
         run: npm run build
 
       - name: Build SDK
         run: npm run build:sdk
+
+      - name: Build UI (Vite + React)
+        run: npm run build:ui
 
       - name: Unit + integration tests with coverage
         run: npx vitest run --coverage
@@ -58,7 +61,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Build API image
+      - name: Build API image (includes UI build stage)
         run: docker build -t ai-agent-security-monitor:ci .
       - name: Compose validation
         run: docker compose config -q
