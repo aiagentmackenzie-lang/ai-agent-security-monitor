@@ -208,6 +208,34 @@ describe('Policy Engine', () => {
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain('Deny Confidential Read');
   });
+
+  it('should NOT permit a conditional permit rule when context is missing (fail-closed)', () => {
+    const result = evaluatePolicy(
+      { agent_id: 'agt_123', action: 'data:read', resource: '/api/users' },
+      [
+        {
+          id: 'pol_cond_permit',
+          name: 'Permit Confidential Read',
+          rules: [
+            {
+              action: 'data:read',
+              resource: '*',
+              effect: 'permit' as const,
+              conditions: { data_classification: 'confidential' },
+            },
+          ],
+          agent_ids: ['*'],
+          active: true,
+          priority: 0,
+          default_effect: 'deny',
+        },
+      ]
+    );
+    // No context -> the conditional permit cannot be validated -> skipped
+    // -> falls through to allowlist default-deny. Fail-closed on permit.
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain('allowlist');
+  });
 });
 
 describe('Policy Engine - Allowlist Mode', () => {

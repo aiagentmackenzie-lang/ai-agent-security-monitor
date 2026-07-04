@@ -1,16 +1,24 @@
+import { fileURLToPath } from 'url';
 import 'dotenv/config';
 import Fastify, { FastifyRequest, FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
+import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { z } from 'zod';
-import pg from 'pg';
-import { randomUUID } from 'crypto';
+import pg, { Pool } from 'pg';
+import { randomUUID, createHash } from 'crypto';
 import { mapEventToCompliance } from '../compliance/mapper.js';
 import { matchPattern } from '../policy/engine.js';
 import { redactEvent } from '../security/redaction.js';
+import { detectAnomalies } from '../services/baseline.js';
+import { SecurityScarletIntegration } from '../services/security-scarlet.js';
+import { AgentDiscoveryService } from '../services/discovery.js';
+import { loadConfig, type AppConfig } from '../config.js';
+import { HttpError, errorHandler } from './errors.js';
+import { dirname, join } from 'path';
 
-const { Pool } = pg;
+const { Pool: PgPool } = pg;
 
 const AgentTypeEnum = z.enum(['langchain', 'crewai', 'claude_code', 'openclaw', 'openai_agents', 'custom']);
 const RegulationEnum = z.enum(['gdpr', 'ai_act', 'ccpa', 'hipaa', 'finra']);
@@ -61,60 +69,88 @@ const LogEventSchema = z.object({
   details: z.record(z.unknown()).optional(),
 });
 
-/**
- * Optional API key authentication.
- * Set API_KEY environment variable to enable. Without it, all requests are allowed.
- * In production, ALWAYS set API_KEY to prevent unauthorized access.
- */
-async function apiKeyAuthHook(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) return; // No API key configured — skip auth
+const AccessLogSchema = z.object({
+  api_key: z.string().min(1),
+  resource: z.string().min(1),
+  timestamp: z.string().datetime().optional(),
+});
 
-  const providedKey = request.headers['x-api-key'];
-  if (providedKey !== apiKey) {
-    reply.code(401).send({ error: 'Unauthorized — invalid or missing X-API-Key header' });
-  }
+const IngestAccessLogsSchema = z.object({
+  access_logs: z.array(AccessLogSchema).min(1),
+});
+
+export interface BuildServerOptions {
+  config?: AppConfig;
+  pool?: Pool;
+  /** Skip rate-limit registration (tests that drive high request volume). */
+  skipRateLimit?: boolean;
 }
 
-export async function buildServer() {
+/**
+ * Build the Fastify server WITHOUT listening. Safe to import in tests.
+ *
+ * Configuration and the DB pool are injectable so integration tests can point
+ * at a testcontainers Postgres without env mutation.
+ */
+export async function buildServer(opts: BuildServerOptions = {}): Promise<{
+  fastify: Fastify.FastifyInstance;
+  pool: Pool;
+  close: () => Promise<void>;
+}> {
+  const config = opts.config ?? loadConfig();
+  const pool = opts.pool ?? new PgPool({ connectionString: config.databaseUrl });
+
   const fastify = Fastify({
-    logger: {
-      level: process.env.LOG_LEVEL || 'info',
-    },
+    logger: { level: config.logLevel },
   });
 
-  // CORS — restrict to known origins in production
+  fastify.setErrorHandler(errorHandler);
+
+  // CORS — explicit allowlist in production, open only in dev mode
   await fastify.register(cors, {
-    origin: process.env.CORS_ORIGINS?.split(',') || true,
+    origin: config.devMode && config.corsOrigins.length === 0 ? true : config.corsOrigins,
   });
+
+  // Rate limiting — Redis-backed when available, in-memory otherwise
+  if (!opts.skipRateLimit) {
+    let redisStore: import('ioredis').default | undefined;
+    if (config.redisUrl) {
+      const ioredis = await import('ioredis');
+      const RedisCtor = (ioredis as unknown as { default: new (url: string, opts?: Record<string, unknown>) => import('ioredis').default }).default;
+      redisStore = new RedisCtor(config.redisUrl, { maxRetriesPerRequest: null });
+    }
+    await fastify.register(rateLimit, {
+      max: config.rateLimitMax,
+      timeWindow: config.rateLimitWindowMs,
+      ...(redisStore ? { redis: redisStore } : {}),
+      allowList: (req: FastifyRequest) => req.url === '/health',
+    });
+  }
 
   await fastify.register(swagger, {
-    openapi: {
-      info: {
-        title: 'AI Agent Security Monitor',
-        version: '0.1.0',
-      },
-    },
+    openapi: { info: { title: 'AI Agent Security Monitor', version: '0.1.0' } },
+  });
+  await fastify.register(swaggerUi, { routePrefix: '/documentation' });
+
+  // Auth hook — required API key unless dev mode allows open access
+  fastify.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!config.apiKey) return; // dev mode, no key configured
+    const provided = request.headers['x-api-key'];
+    if (provided !== config.apiKey) {
+      throw HttpError.unauthorized('Unauthorized — invalid or missing X-API-Key header');
+    }
+    // reply unused on success
+    void reply;
   });
 
-  await fastify.register(swaggerUi, {
-    routePrefix: '/documentation',
-  });
-
-  // Apply auth to all routes (no-op if API_KEY is not set)
-  fastify.addHook('onRequest', apiKeyAuthHook);
-
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
-  // Graceful shutdown — close pool and server
-  const shutdown = async (signal: string) => {
-    fastify.log.info(`${signal} received, shutting down…`);
-    await fastify.close();
-    await pool.end();
-    process.exit(0);
-  };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  // Scarlet forwarding (opt-in). Fire-and-forget after a successful commit.
+  const scarlet = config.scarletForwardEnabled && config.scarletApiUrl
+    ? new SecurityScarletIntegration({
+        apiUrl: config.scarletApiUrl,
+        apiKey: config.scarletApiKey || '',
+        eventBusUrl: config.scarletEventBusUrl || '',
+      })
+    : null;
 
   // ─── Health ───
   fastify.get('/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }));
@@ -139,9 +175,7 @@ export async function buildServer() {
   fastify.get('/agents/:id', async (request) => {
     const { id } = request.params as { id: string };
     const result = await pool.query('SELECT * FROM agents WHERE id = $1', [id]);
-    if (result.rows.length === 0) {
-      throw { statusCode: 404, message: 'Agent not found' };
-    }
+    if (result.rows.length === 0) throw HttpError.notFound('Agent not found');
     return { agent: result.rows[0] };
   });
 
@@ -164,22 +198,17 @@ export async function buildServer() {
       `UPDATE agents SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
       values
     );
-    if (result.rows.length === 0) {
-      throw { statusCode: 404, message: 'Agent not found' };
-    }
+    if (result.rows.length === 0) throw HttpError.notFound('Agent not found');
     return { agent: result.rows[0] };
   });
 
-  // FIX L-01: Return 404 when soft-deleting a non-existent agent
   fastify.delete('/agents/:id', async (request) => {
     const { id } = request.params as { id: string };
     const result = await pool.query(
       'UPDATE agents SET active = false, updated_at = NOW() WHERE id = $1 RETURNING id',
       [id]
     );
-    if (result.rows.length === 0) {
-      throw { statusCode: 404, message: 'Agent not found' };
-    }
+    if (result.rows.length === 0) throw HttpError.notFound('Agent not found');
     return { success: true };
   });
 
@@ -189,9 +218,7 @@ export async function buildServer() {
       `UPDATE agents SET quarantined = true, updated_at = NOW() WHERE id = $1 RETURNING *`,
       [id]
     );
-    if (result.rows.length === 0) {
-      throw { statusCode: 404, message: 'Agent not found' };
-    }
+    if (result.rows.length === 0) throw HttpError.notFound('Agent not found');
     const alertResult = await pool.query(
       `INSERT INTO alerts (agent_id, type, severity, message, metadata)
        VALUES ($1, 'agent_quarantined', 'high', $2, $3) RETURNING *`,
@@ -206,9 +233,7 @@ export async function buildServer() {
       `UPDATE agents SET quarantined = false, updated_at = NOW() WHERE id = $1 RETURNING *`,
       [id]
     );
-    if (result.rows.length === 0) {
-      throw { statusCode: 404, message: 'Agent not found' };
-    }
+    if (result.rows.length === 0) throw HttpError.notFound('Agent not found');
     return { agent: result.rows[0] };
   });
 
@@ -225,7 +250,7 @@ export async function buildServer() {
       );
       if (result.rows.length === 0) {
         await client.query('ROLLBACK');
-        throw { statusCode: 404, message: 'Agent not found' };
+        throw HttpError.notFound('Agent not found');
       }
 
       const lastEvent = await client.query(
@@ -234,7 +259,6 @@ export async function buildServer() {
       );
       const previousHash = lastEvent.rows[0]?.hash || null;
 
-      // FIX C-07/H-07: Include all relevant fields in hash computation
       const eventData = JSON.stringify({
         agent_id: id,
         event_type: 'revoked',
@@ -243,7 +267,6 @@ export async function buildServer() {
         result: 'success',
         ts: Date.now(),
       });
-      const { createHash } = await import('crypto');
       const hash = createHash('sha256')
         .update(previousHash ? `${previousHash}-${eventData}` : eventData)
         .digest('hex');
@@ -279,23 +302,21 @@ export async function buildServer() {
     return { events: result.rows };
   });
 
-  // FIX C-05: Use URL path param :id instead of body agent_id for event logging
   fastify.post('/agents/:id/events', async (request) => {
     const { id } = request.params as { id: string };
     const data = LogEventSchema.parse(request.body);
 
-    // Enforce path param as the authoritative agent_id
     const agentId = id;
-
     const client = await pool.connect();
+    let committed: { event_id: string; agent_id: string; event_type: string; action: string | null; resource: string | null; result: string; details: Record<string, unknown>; created_at: Date; compliance_records: unknown[] } | null = null;
+
     try {
       await client.query('BEGIN');
 
-      // Verify agent exists
       const agentCheck = await client.query('SELECT id FROM agents WHERE id = $1', [agentId]);
       if (agentCheck.rows.length === 0) {
         await client.query('ROLLBACK');
-        throw { statusCode: 404, message: 'Agent not found' };
+        throw HttpError.notFound('Agent not found');
       }
 
       const lastEvent = await client.query(
@@ -304,8 +325,6 @@ export async function buildServer() {
       );
       const previousHash = lastEvent.rows[0]?.hash || null;
 
-      const { createHash } = await import('crypto');
-      // FIX H-07: Include all relevant fields in hash computation
       const eventData = JSON.stringify({
         agent_id: agentId,
         event_type: data.event_type,
@@ -319,7 +338,6 @@ export async function buildServer() {
         .update(previousHash ? `${previousHash}-${eventData}` : eventData)
         .digest('hex');
 
-      // Redact sensitive data before persistence
       const redacted = redactEvent({
         event_type: data.event_type,
         action: data.action,
@@ -335,7 +353,6 @@ export async function buildServer() {
         [agentId, data.event_type, redacted.action, redacted.resource, data.result, JSON.stringify(redacted.details), previousHash, eventHash]
       );
 
-      // Create alerts for any redacted secrets
       if (redacted.flags.length > 0) {
         const criticalFlags = redacted.flags.filter(f => f.severity === 'critical' || f.severity === 'high');
         if (criticalFlags.length > 0) {
@@ -369,11 +386,69 @@ export async function buildServer() {
       }
 
       await client.query('COMMIT');
-      return { event: result.rows[0], compliance_records: complianceRecords };
+      committed = {
+        event_id: result.rows[0].id,
+        agent_id: agentId,
+        event_type: data.event_type,
+        action: redacted.action ?? null,
+        resource: redacted.resource ?? null,
+        result: data.result,
+        details: redacted.details,
+        created_at: result.rows[0].created_at,
+        compliance_records: complianceRecords,
+      };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
+    } finally {
+      client.release();
     }
+
+    // Fire-and-forget Scarlet forwarding (after commit, never blocks response)
+    if (scarlet && committed) {
+      scarlet.forwardEvent({
+        agent_id: committed.agent_id,
+        event_type: committed.event_type,
+        action: committed.action ?? undefined,
+        resource: committed.resource ?? undefined,
+        result: committed.result,
+        details: committed.details,
+        created_at: committed.created_at,
+      }).catch((e) => fastify.log.warn({ err: e }, 'Scarlet forward failed'));
+    }
+
+    return { event: { id: committed!.event_id }, compliance_records: committed!.compliance_records };
+  });
+
+  // ─── Agent anomaly detection (behavior baseline) ───
+  fastify.get('/agents/:id/anomalies', async (request) => {
+    const { id } = request.params as { id: string };
+    const { window_hours = '24' } = request.query as { window_hours?: string };
+    const hours = parseInt(window_hours, 10);
+    if (isNaN(hours) || hours < 1) throw HttpError.badRequest('window_hours must be a positive integer');
+    const clamped = Math.min(hours, 168);
+
+    const agentRes = await pool.query('SELECT type FROM agents WHERE id = $1', [id]);
+    if (agentRes.rows.length === 0) throw HttpError.notFound('Agent not found');
+
+    const eventsRes = await pool.query(
+      `SELECT action, resource, created_at FROM agent_events
+       WHERE agent_id = $1 AND created_at > NOW() - INTERVAL '1 hour' * $2
+       ORDER BY created_at ASC`,
+      [id, clamped]
+    );
+
+    const anomalies = detectAnomalies(
+      id,
+      agentRes.rows[0].type,
+      eventsRes.rows.map((r: { action: string; resource: string; created_at: Date }) => ({
+        action: r.action || '',
+        resource: r.resource || '',
+        created_at: new Date(r.created_at),
+      }))
+    );
+
+    return { agent_id: id, window_hours: clamped, event_count: eventsRes.rows.length, anomalies };
   });
 
   // ─── Policies ───
@@ -396,9 +471,7 @@ export async function buildServer() {
   fastify.get('/policies/:id', async (request) => {
     const { id } = request.params as { id: string };
     const result = await pool.query('SELECT * FROM policies WHERE id = $1', [id]);
-    if (result.rows.length === 0) {
-      throw { statusCode: 404, message: 'Policy not found' };
-    }
+    if (result.rows.length === 0) throw HttpError.notFound('Policy not found');
     return { policy: result.rows[0] };
   });
 
@@ -423,22 +496,17 @@ export async function buildServer() {
       `UPDATE policies SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
       values
     );
-    if (result.rows.length === 0) {
-      throw { statusCode: 404, message: 'Policy not found' };
-    }
+    if (result.rows.length === 0) throw HttpError.notFound('Policy not found');
     return { policy: result.rows[0] };
   });
 
-  // FIX L-02: Soft-delete policies for audit trail consistency
   fastify.delete('/policies/:id', async (request) => {
     const { id } = request.params as { id: string };
     const result = await pool.query(
       'UPDATE policies SET active = false, updated_at = NOW() WHERE id = $1 RETURNING id',
       [id]
     );
-    if (result.rows.length === 0) {
-      throw { statusCode: 404, message: 'Policy not found' };
-    }
+    if (result.rows.length === 0) throw HttpError.notFound('Policy not found');
     return { success: true };
   });
 
@@ -477,22 +545,26 @@ export async function buildServer() {
         const actionMatch = matchPattern(data.action, rule.action);
         const resourceMatch = matchPattern(data.resource, rule.resource);
         if (actionMatch && resourceMatch) {
-          // FIX H-06: Evaluate conditions if present and context is provided
-          if (rule.conditions && data.context) {
-            let conditionsMet = true;
-            for (const [field, expected] of Object.entries(rule.conditions)) {
-              const actual = data.context[field as keyof typeof data.context];
-              if (typeof expected === 'string') {
-                if (actual !== expected) { conditionsMet = false; break; }
-              } else if (typeof expected === 'object' && expected !== null) {
-                const op = expected as Record<string, unknown>;
-                if ('eq' in op && actual !== op.eq) { conditionsMet = false; break; }
-                if ('neq' in op && actual === op.neq) { conditionsMet = false; break; }
-                if ('in' in op && Array.isArray(op.in) && !op.in.includes(actual)) { conditionsMet = false; break; }
-                if ('contains' in op && typeof actual === 'string' && !actual.includes(op.contains as string)) { conditionsMet = false; break; }
+          if (rule.conditions) {
+            if (data.context) {
+              let conditionsMet = true;
+              for (const [field, expected] of Object.entries(rule.conditions)) {
+                const actual = data.context[field as keyof typeof data.context];
+                if (typeof expected === 'string') {
+                  if (actual !== expected) { conditionsMet = false; break; }
+                } else if (typeof expected === 'object' && expected !== null) {
+                  const op = expected as Record<string, unknown>;
+                  if ('eq' in op && actual !== op.eq) { conditionsMet = false; break; }
+                  if ('neq' in op && actual === op.neq) { conditionsMet = false; break; }
+                  if ('in' in op && Array.isArray(op.in) && !op.in.includes(actual)) { conditionsMet = false; break; }
+                  if ('contains' in op && typeof actual === 'string' && !actual.includes(op.contains as string)) { conditionsMet = false; break; }
+                }
               }
+              if (!conditionsMet) continue;
+            } else if (rule.effect === 'permit') {
+              continue; // permit cannot be validated without context — skip (fail-closed)
             }
-            if (!conditionsMet) continue; // skip this rule, conditions not met
+            // conditional deny with no context → falls through and fires (over-block)
           }
 
           allowed = rule.effect === 'permit';
@@ -503,22 +575,19 @@ export async function buildServer() {
           break;
         }
       }
-      if (policy_id) break; // found a matching rule
+      if (policy_id) break;
 
-      // Track allowlist-mode policies for default-effect logic
       if (policy.default_effect === 'deny' && !allowlistPolicy) {
         allowlistPolicy = { id: policy.id, name: policy.name };
       }
     }
 
-    // If no rule matched and an allowlist-mode policy applies, deny by default
     if (!policy_id && allowlistPolicy) {
       allowed = false;
       reason = `Denied by default — allowlist policy '${allowlistPolicy.name}' has no matching permit rule`;
       policy_id = allowlistPolicy.id;
     }
 
-    // FIX H-08: Use crypto.randomUUID() instead of Math.random()
     const certificate_id = `cert_${randomUUID()}`;
 
     return {
@@ -549,7 +618,6 @@ export async function buildServer() {
     );
 
     const satisfied = records.rows.filter(r => r.status === 'compliant').map(r => r.control_id);
-    // FIX M-09: Use 'non_compliant' to match the types.ts ComplianceRecord.status union
     const gaps = records.rows.filter(r => r.status !== 'compliant').map(r => r.control_id);
 
     return {
@@ -568,9 +636,7 @@ export async function buildServer() {
     const { regulations } = request.query as { regulations?: string } || {};
 
     const agentResult = await pool.query('SELECT * FROM agents WHERE id = $1', [agent_id]);
-    if (agentResult.rows.length === 0) {
-      throw { statusCode: 404, message: 'Agent not found' };
-    }
+    if (agentResult.rows.length === 0) throw HttpError.notFound('Agent not found');
 
     const events = await pool.query(
       'SELECT * FROM agent_events WHERE agent_id = $1 ORDER BY created_at DESC',
@@ -621,15 +687,12 @@ export async function buildServer() {
     const limitNum = Math.min(parseInt(limit, 10), 100);
     const offset = (pageNum - 1) * limitNum;
 
-    // FIX C-02: Validate page/limit to prevent NaN injection
     if (isNaN(pageNum) || isNaN(limitNum) || pageNum < 1 || limitNum < 1) {
-      throw { statusCode: 400, message: 'Invalid pagination parameters' };
+      throw HttpError.badRequest('Invalid pagination parameters');
     }
 
     const agentResult = await pool.query('SELECT * FROM agents WHERE id = $1', [agent_id]);
-    if (agentResult.rows.length === 0) {
-      throw { statusCode: 404, message: 'Agent not found' };
-    }
+    if (agentResult.rows.length === 0) throw HttpError.notFound('Agent not found');
 
     const eventsResult = await pool.query(
       'SELECT * FROM agent_events WHERE agent_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
@@ -752,13 +815,10 @@ export async function buildServer() {
     };
   });
 
-  // FIX C-02: Use parameterized query for timeline — prevent SQL injection
   fastify.get('/dashboard/events/timeline', async (request) => {
     const { agent_id, hours = '24' } = request.query as { agent_id?: string; hours?: string };
     const hoursNum = parseInt(hours, 10);
-    if (isNaN(hoursNum) || hoursNum < 1) {
-      throw { statusCode: 400, message: 'Invalid hours parameter — must be a positive integer' };
-    }
+    if (isNaN(hoursNum) || hoursNum < 1) throw HttpError.badRequest('Invalid hours parameter — must be a positive integer');
     const clampedHours = Math.min(hoursNum, 168);
 
     let result;
@@ -774,11 +834,7 @@ export async function buildServer() {
       );
     }
 
-    return {
-      timeline: result.rows,
-      count: result.rows.length,
-      hours_range: clampedHours,
-    };
+    return { timeline: result.rows, count: result.rows.length, hours_range: clampedHours };
   });
 
   fastify.get('/dashboard/compliance/summary', async () => {
@@ -824,10 +880,15 @@ export async function buildServer() {
   // ─── Alerts ───
   fastify.get('/alerts', async (request) => {
     const { agent_id, acknowledged } = request.query as { agent_id?: string; acknowledged?: string };
+    const params: unknown[] = [];
     let query = 'SELECT * FROM alerts WHERE 1=1';
-    const params: string[] = [];
     if (agent_id) { params.push(agent_id); query += ` AND agent_id = $${params.length}`; }
-    if (acknowledged !== undefined) { params.push(acknowledged); query += ` AND acknowledged = $${params.length}`; }
+    if (acknowledged !== undefined) {
+      if (acknowledged !== 'true' && acknowledged !== 'false') {
+        throw HttpError.badRequest("acknowledged must be 'true' or 'false'");
+      }
+      params.push(acknowledged === 'true'); query += ` AND acknowledged = $${params.length}`;
+    }
     query += ' ORDER BY created_at DESC LIMIT 100';
     const result = await pool.query(query, params);
     return { alerts: result.rows };
@@ -840,16 +901,153 @@ export async function buildServer() {
       `UPDATE alerts SET acknowledged = true, acknowledged_by = $1, acknowledged_at = NOW() WHERE id = $2 RETURNING *`,
       [acknowledged_by, id]
     );
-    if (result.rows.length === 0) {
-      throw { statusCode: 404, message: 'Alert not found' };
-    }
+    if (result.rows.length === 0) throw HttpError.notFound('Alert not found');
     return { alert: result.rows[0] };
   });
 
-  await fastify.listen({ port: Number(process.env.PORT) || 8000, host: '0.0.0.0' });
-  fastify.log.info(`AI Agent Security Monitor running on port ${process.env.PORT || 8000}`);
+  // ─── Discovery (shadow agent detection) ───
+  // Ingest raw API-gateway access logs for shadow-agent scanning.
+  fastify.post('/discovery/access-logs', async (request) => {
+    const data = IngestAccessLogsSchema.parse(request.body);
+    const inserted: { count: number } = { count: 0 };
+    const client = await pool.connect();
+    try {
+      for (const log of data.access_logs) {
+        const ts = log.timestamp ? new Date(log.timestamp) : new Date();
+        await client.query(
+          `INSERT INTO access_logs (api_key_hash, key_prefix, resource, observed_at)
+           VALUES ($1, $2, $3, $4)`,
+          [
+            createHash('sha256').update(log.api_key).digest('hex'),
+            log.api_key.length >= 4 ? `${log.api_key.slice(0, 2)}***` : '***',
+            log.resource,
+            ts,
+          ]
+        );
+        inserted.count++;
+      }
+    } finally {
+      client.release();
+    }
+    return { ingested: inserted.count };
+  });
 
-  return { fastify, pool };
+  // Run a shadow-agent scan against ingested access logs.
+  fastify.post('/discovery/shadow-scan', async () => {
+    const logsRes = await pool.query(
+      `SELECT api_key_hash, key_prefix, resource, observed_at FROM access_logs ORDER BY observed_at ASC`
+    );
+
+    // Reconstruct a synthetic api_key per row is impossible (we only store hashes),
+    // so we scan by hash directly: any access-log hash not present in agents.api_key_hash
+    // is a shadow key. This is the real, privacy-preserving implementation.
+    const discovered: { key_prefix: string; resource: string; observed_at: Date }[] = [];
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const row of logsRes.rows) {
+        const known = await client.query(
+          'SELECT id FROM agents WHERE api_key_hash = $1',
+          [row.api_key_hash]
+        );
+        if (known.rows.length === 0) {
+          // Avoid duplicate shadow agents for the same key hash
+          const existing = await client.query(
+            `SELECT a.id FROM agents a
+             JOIN alerts al ON al.agent_id = a.id
+             WHERE a.api_key_hash = $1 AND al.type = 'shadow_agent_detected'`,
+            [row.api_key_hash]
+          );
+          if (existing.rows.length === 0) {
+            const agentRes = await client.query(
+              `INSERT INTO agents (name, type, api_key_hash, metadata, active, quarantined)
+               VALUES ($1, 'custom', $2, $3, true, false) RETURNING id`,
+              [
+                `shadow_${row.key_prefix}`,
+                row.api_key_hash,
+                JSON.stringify({ discovered_at: row.observed_at.toISOString(), resource: row.resource, shadow: true }),
+              ]
+            );
+            await client.query(
+              `INSERT INTO alerts (agent_id, type, severity, message, metadata)
+               VALUES ($1, 'shadow_agent_detected', 'high', $2, $3)`,
+              [
+                agentRes.rows[0].id,
+                `Shadow agent detected accessing ${row.resource}`,
+                JSON.stringify({ key_prefix: row.key_prefix, resource: row.resource, observed_at: row.observed_at.toISOString() }),
+              ]
+            );
+            discovered.push({ key_prefix: row.key_prefix, resource: row.resource, observed_at: row.observed_at });
+          }
+        }
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+    return { shadow_agents_detected: discovered.length, discovered };
+  });
+
+  // Behavior-based discovery: flag agents registered as 'custom'/'unknown' whose
+  // action-pattern distribution matches a known baseline agent type with high
+  // confidence — a strong signal of a misregistered or shadow agent.
+  fastify.get('/discovery/behavior-scan', async () => {
+    const discovery = new AgentDiscoveryService(pool);
+    const findings = await discovery.detectByBehavior();
+    return { behavior_findings: findings };
+  });
+
+  // ─── Static dashboard UI ───
+  // Served via an explicit route (not @fastify/static) to avoid prefix
+  // conflicts with the /dashboard/* JSON API routes.
+  fastify.get('/dashboard/', async (_request, reply) => {
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const htmlPath = join(__dirname, '..', '..', 'dashboard', 'index.html');
+    try {
+      const html = await (await import('fs/promises')).readFile(htmlPath, 'utf8');
+      reply.type('text/html').send(html);
+    } catch {
+      reply.code(404).send({ error: 'Dashboard UI not found' });
+    }
+  });
+  fastify.get('/dashboard', async (_request, reply) => {
+    reply.redirect('/dashboard/', 301);
+  });
+
+  const close = async () => {
+    await fastify.close();
+    await pool.end();
+  };
+
+  return { fastify, pool, close };
 }
 
-buildServer().catch(console.error);
+/**
+ * Start the server (listen on a port). Only runs when this file is the entry
+ * point — importing buildServer() in tests does NOT start a listener.
+ */
+export async function start(): Promise<void> {
+  const config = loadConfig();
+  const { fastify, close } = await buildServer({ config });
+
+  const shutdown = async (signal: string) => {
+    fastify.log.info(`${signal} received, shutting down…`);
+    await close();
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  await fastify.listen({ port: config.port, host: config.host });
+  fastify.log.info(`AI Agent Security Monitor running on port ${config.port}`);
+}
+
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
+  start().catch((err) => {
+    console.error('Failed to start:', err);
+    process.exit(1);
+  });
+}

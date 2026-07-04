@@ -96,11 +96,11 @@ async function seed() {
   ];
 
   let previousHash: string | null = null;
-  const { createHash } = await import('crypto');
+  const { createHash, randomUUID } = await import('crypto');
 
   for (const event of events) {
     const agentId = agentIds[event.agent_idx];
-    const eventData = `${agentId}-${event.event_type}-${event.action}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const eventData = `${agentId}-${event.event_type}-${event.action}-${Date.now()}-${randomUUID()}`;
     const hash = createHash('sha256').update(previousHash ? `${previousHash}-${eventData}` : eventData).digest('hex');
 
     await pool.query(

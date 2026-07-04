@@ -6,13 +6,16 @@
   "scripts": {
     "dev": "tsx watch src/api/server.ts",
     "build": "tsc",
+    "build:sdk": "tsc -p sdk/tsconfig.json",
     "start": "node dist/api/server.js",
     "test": "vitest",
     "test:coverage": "vitest --coverage",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:sdk": "tsc -p sdk/tsconfig.json --noEmit",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts",
+    "smoke": "bash scripts/smoke_test.sh",
     "docker:dev": "docker compose up -d",
     "docker:dev:down": "docker compose down"
   },
@@ -27,16 +30,19 @@
   "license": "ISC",
   "dependencies": {
     "@fastify/cors": "^10.0.0",
+    "@fastify/rate-limit": "^11.1.0",
     "@fastify/swagger": "^9.5.0",
     "@fastify/swagger-ui": "^5.2.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "dotenv": "^17.0.0",
     "fastify": "^5.2.0",
+    "ioredis": "^5.11.1",
     "pg": "^8.20.0",
     "pino": "^9.6.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "^12.0.4",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
     "@typescript-eslint/eslint-plugin": "^8.58.1",
