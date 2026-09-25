@@ -11,4 +11,6 @@ coverage/
 ui/dist/
 ui/node_modules/
 # SDK build output (built via npm run build:sdk)
-sdk/dist/ui/tsconfig.tsbuildinfo
+sdk/dist/
+# TypeScript incremental build info from the UI typecheck/build
+ui/tsconfig.tsbuildinfo
